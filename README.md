@@ -97,16 +97,21 @@ commit `.env`, and never paste credentials into chats, issues or screenshots.
 6. Run the feasibility check step by step:
 
    ```powershell
-   uv run python scripts/paypal_sandbox_check.py                       # auth + invoice API access
-   uv run python scripts/paypal_sandbox_check.py --create-draft        # + draft invoice ($1,000 - $10 discount)
-   uv run python scripts/paypal_sandbox_check.py --create-draft --send # + hosted payer link
+   uv run python scripts/paypal_sandbox_check.py                  # auth + invoice API access
+   uv run python scripts/paypal_sandbox_check.py --create-draft   # one draft ($1,000 - $10 discount)
+   uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-XXXX --set-due-date 2026-12-01
+   uv run python scripts/paypal_sandbox_check.py --send-invoice-id INV2-XXXX --expected-due-date 2026-12-01
    ```
 
-7. Open the printed payer link in a private browser window, log in as the Sandbox
-   **Personal** account, and pay. Then verify the payment against PayPal:
+   `--send-invoice-id` checks the draft first (status, $990 total, discount, due date,
+   recipient) and never creates an invoice. The hosted payer link is saved to the
+   git-ignored `evidence/paypal-sandbox/raw/payer_link_<id>.txt`, not printed.
+
+7. Open that link in a private browser window, log in as the Sandbox **Personal**
+   account, and pay. Then verify the payment against PayPal:
 
    ```powershell
-   uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-XXXX --expected-cents 99000
+   uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-XXXX --expected-status PAID
    ```
 
 Each run writes redacted evidence to `evidence/paypal-sandbox/runs/`. A `PAID` status

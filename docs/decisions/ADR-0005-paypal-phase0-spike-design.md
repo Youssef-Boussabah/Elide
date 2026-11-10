@@ -29,3 +29,12 @@
 - **Defaults PayPal applied to the draft:** `payment_term.term_type = NO_DUE_DATE`,
   `tax_total = 0.00`, `invoice_date` = creation date. Elide does not yet set a due date;
   P1/P5 must decide whether invoices carry an explicit `due_date`.
+- **Due-date update (2026-11-10):** `PUT /v2/invoicing/invoices/{id}` is a full replace.
+  `invoice_ops.build_due_date_update` builds the body from PayPal's own GET of the draft,
+  sends the discount back positive (as on creation) and changes only `payment_term` to
+  `DUE_ON_DATE_SPECIFIED` / `2026-12-01`. PayPal returned 200 and kept total, discount,
+  line item, invoice number and recipient unchanged (run `20261110T220139Z`).
+- **Send (2026-11-10):** `POST .../send` with `send_to_recipient=true` returned 200 and a
+  `rel=payer-view` link on `www.sandbox.paypal.com` in the response body; status became
+  `SENT` (run `20261110T220152Z`). Sending is a separate, by-id mode with pre-send checks;
+  a draft is never created and sent in one command.

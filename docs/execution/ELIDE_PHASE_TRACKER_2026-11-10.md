@@ -1,9 +1,9 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-10, 21:47 UTC):** P0 **partial**. Local bootstrap is done and verified. PayPal Sandbox OAuth, Invoicing v2 access, draft creation with the $10 discount and independent retrieval are **Sandbox-verified**. Sending the invoice and the payer payment are **not yet done** (they wait for owner approval). No financial features are implemented. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-10, 22:02 UTC):** P0 **partial**. Local bootstrap is done and verified. PayPal Sandbox OAuth, Invoicing v2 access, draft creation with the $10 discount, due-date update, send and independent retrieval are **Sandbox-verified**; invoice `INV2-4RUV-XPEH-4F3C-T8BW` is **SENT** and awaiting the owner's manual Sandbox payment. No financial features are implemented. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
-| P0 | API access + hosted Sandbox invoice payment route proven | **Partial**: bootstrap done; OAuth, Invoicing access, draft + GET Sandbox-verified; send + payer payment pending owner approval; CI not run | Redacted API responses + provider IDs/status + code SHA |
+| P0 | API access + hosted Sandbox invoice payment route proven | **Partial**: bootstrap done; OAuth, Invoicing access, draft, due-date update, send + GET Sandbox-verified; payer payment pending owner action; CI not run | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | Not started | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | Not started | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
@@ -70,8 +70,12 @@ Owner configured a dedicated Sandbox Merchant app with Invoicing enabled. Env ch
 | 3. Create draft (`POST /v2/invoicing/invoices`, `PayPal-Request-Id`, `Prefer: return=representation`) | 201 | `f4434203103cb` | **Exactly one** draft: `INV2-4RUV-XPEH-4F3C-T8BW`, status `DRAFT`, number `0001` | **Sandbox-verified** |
 | 5. Independent GET (same run) | 200 | `f705628b8d281` | Amounts correct (see below). Run flagged `MISMATCH` only because our parser rejected PayPal's negative discount sign; parser corrected | **Sandbox-verified** |
 | 5. Independent GET (separate process, corrected parser) | 200 | see run file | `status=DRAFT`, all requested terms match | **Sandbox-verified** |
-| 4. Send → hosted `payer-view` link | — | — | **Not run, by design.** Requires owner approval | Specified |
-| Actual payer payment | — | — | Not attempted. Requires owner approval + owner action in hosted page | Specified |
+| 3a. Owner-approved due-date update: GET before (`PUT /v2/invoicing/invoices/{id}?send_to_recipient=false&send_to_invoicer=false`, full replace built from PayPal's own representation) | 200 / 200 / 200 | see run `20261110T220139Z` | Before: `NO_DUE_DATE`. After: `DUE_ON_DATE_SPECIFIED`, `due_date=2026-12-01`; status still `DRAFT`; total, discount, line item, invoice number, recipient unchanged | **Sandbox-verified** |
+| 4. Pre-send GET checks | 200 | see run `20261110T220152Z` | `DRAFT`, 99000 cents, due 2026-12-01, sole recipient = configured Sandbox personal payer. All pass | **Sandbox-verified** |
+| 4. Send (`POST .../send`, `send_to_recipient=true`, `PayPal-Request-Id=elide-8a59efe9-8618-40e7-80bf-83d5373455c7`) | 200 | see run `20261110T220152Z` | Owner-approved. Exactly this invoice sent; no new invoice created (`total_items=1` throughout) | **Sandbox-verified** |
+| 6. Post-send GET | 200 | see run `20261110T220152Z` | Status **`SENT`**; all terms unchanged; `due_amount` 99000 | **Sandbox-verified** |
+| 7. Hosted payer link | — | — | Returned by PayPal in the send response (`rel=payer-view`), host `www.sandbox.paypal.com`; not constructed. Stored only in git-ignored `evidence/paypal-sandbox/raw/`; fingerprint `redacted:f77a6cd3d419` | **Sandbox-verified** |
+| Actual payer payment | — | — | **Pending owner action** in the hosted page (Sandbox personal account). Not initiated, captured or simulated by Elide | Specified |
 | Orders v2 fallback | — | — | Not needed so far: Invoicing access works | Specified |
 
 **Provider-recorded terms of `INV2-4RUV-XPEH-4F3C-T8BW`** (from GET, in cents):
@@ -95,6 +99,9 @@ payer email, `@` or access token present):
 - `20261110T214515Z.json`: steps 1–3, 2a (415), 5
 - `20261110T214717Z.json`: separate-process GET, all terms match
 - `20261110T214721Z.json`: numbering re-check, 200
+- `20261110T220139Z.json`: due-date update (before GET, PUT, after GET), commit `c80173d`
+- `20261110T220152Z.json`: pre-send GET, send, post-send GET (`SENT`), commit `c80173d`
+  (recorded `+dirty` only because the previous run's evidence file was untracked)
 
 Code changes made from these observations (ADR-0005 "Sandbox observations"): new
 `api/integrations/paypal/invoice_terms.py` (exact parse of provider terms; negative sign
@@ -109,22 +116,24 @@ content type; script compares every term, adds `--expected-status` and `--check-
 
 ### Owner actions required
 1. ~~Create Sandbox accounts + app, fill `.env`~~ (done by owner 2026-11-10).
-2. Approve sending the existing draft `INV2-4RUV-XPEH-4F3C-T8BW` to the Sandbox personal payer.
-3. After the hosted payer link is produced, pay it as the Sandbox Personal account.
+2. ~~Approve sending the existing draft `INV2-4RUV-XPEH-4F3C-T8BW`~~ (approved and sent 2026-11-10).
+3. **Now:** open the link in `evidence/paypal-sandbox/raw/payer_link_INV2-4RUV-XPEH-4F3C-T8BW.txt`
+   and pay $990.00 as the Sandbox Personal account.
 4. Later: approve GitHub repository name/visibility before any remote is created.
 
 ### Remaining P0 gate requirements
 - [x] OAuth token obtained server-side (redacted evidence)
 - [x] Invoicing v2 accessible for the owned Sandbox merchant
 - [x] Draft invoice created; provider-computed total observed (discount behavior recorded: returned negative, total 99000)
-- [ ] Invoice sent; hosted payer link observed (needs owner approval)
+- [x] Invoice sent; hosted payer link observed (owner-approved; status `SENT`; link from PayPal's send response)
 - [ ] Sandbox payer completes payment; provider GET confirms amount/currency/status
 - [x] Redacted evidence + commit SHA recorded here (for steps 1–3, 5)
 - [x] (if any step returns 403/unsupported) blocker recorded: no 403; one 415 on numbering, cause found and fixed. Orders v2 fallback not needed so far
 - [ ] CI run green on GitHub (after the remote exists)
 
-Note: the script's `--create-draft --send` mode would create a **second** draft. To
-send the existing one, add a send-by-id option first (next task).
+The old `--create-draft --send` combination was removed. Sending is only possible with
+`--send-invoice-id`, which never creates an invoice (tested in
+`tests/unit/test_paypal_send_script.py`).
 
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
@@ -155,3 +164,13 @@ send the existing one, add a send-by-id option first (next task).
   **Next task:** with owner approval, add a send-by-id option and send
   `INV2-4RUV-XPEH-4F3C-T8BW`; owner pays in the hosted page; verify with
   `--invoice-id INV2-4RUV-XPEH-4F3C-T8BW --expected-cents 99000 --expected-status PAID`.
+- 2026-11-10 (Claude Code, Opus 5.5): owner approved sending `INV2-4RUV-XPEH-4F3C-T8BW`.
+  Added `invoice_ops.py` (due-date full update, pre-send checks, payer-link extraction)
+  and script modes `--set-due-date` / `--send-invoice-id` (commit `c80173d`; pytest 70
+  passed, ruff clean). Due date set to 2026-12-01 via PUT (200), re-fetched: all terms
+  unchanged. Pre-send checks passed, sent (200), re-fetched: `SENT`. Payer link from
+  PayPal's send response saved to git-ignored `evidence/paypal-sandbox/raw/`. Stopped for
+  the owner's manual Sandbox payment.
+  **Next task:** after the owner pays, run
+  `uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-4RUV-XPEH-4F3C-T8BW --expected-status PAID --expected-due-date 2026-12-01`
+  and record status, paid amount, currency and remaining balance here.
