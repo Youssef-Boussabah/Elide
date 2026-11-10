@@ -1,9 +1,9 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-10, 22:20 UTC):** P0 **partial: PayPal payment gate met; only the GitHub CI run remains** (needs an owner-approved remote). Local bootstrap is done and verified. PayPal Sandbox OAuth, Invoicing v2 access, draft with the $10 discount, due-date update, send, owner payment and independent provider retrieval are **Sandbox-verified**: invoice `INV2-4RUV-XPEH-4F3C-T8BW` is **PAID**, US$990.00, one transaction, remaining balance 0. Open finding: the Sandbox merchant receives in **CAD** (see *Open findings*). No financial features are implemented. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-10, 22:45 UTC):** P0 **complete, pending owner review**. All eight P0 gate items have evidence (see *P0 exit review*). Public repo https://github.com/Youssef-Boussabah/Elide, CI green. PayPal Sandbox invoice `INV2-4RUV-XPEH-4F3C-T8BW` is **PAID** (US$990.00, one transaction, remaining 0), provider-verified; the Canadian Sandbox merchant was credited CAD (decision F1, ADR-0007). No P1 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
-| P0 | API access + hosted Sandbox invoice payment route proven | **Partial**: PayPal Sandbox payment route proven (invoice PAID, provider-verified); CI run on GitHub not yet possible (no remote) | Redacted API responses + provider IDs/status + code SHA |
+| P0 | API access + hosted Sandbox invoice payment route proven | **Complete, pending owner review**: payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | Not started | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | Not started | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
@@ -54,8 +54,8 @@ Full log: `evidence/phase0/verification_2026-11-10.txt`, server probe: `evidence
 | Docs intact | SHA-256 vs manifest | 18/18 OK |
 | PayPal check without creds | `uv run python scripts/paypal_sandbox_check.py` | exits 2 "BLOCKED", no network call |
 
-**Not executed:** GitHub Actions CI (no remote); any PayPal Sandbox call (no credentials);
-Playwright/E2E (not set up).
+**Not executed at bootstrap:** GitHub Actions CI and PayPal calls (both done later, see
+below). Playwright/E2E: not set up (P4/P6).
 
 ### PayPal Sandbox status (runs 2026-11-10, Sandbox only, environment `api-m.sandbox.paypal.com`)
 Owner configured a dedicated Sandbox Merchant app with Invoicing enabled. Env check
@@ -144,11 +144,86 @@ content type; script compares every term, adds `--expected-status` and `--check-
 - [x] Sandbox payer completes payment; provider GET confirms amount/currency/status (PAID, USD 990.00, 1 transaction `4J016440MV5285528`, remaining 0)
 - [x] Redacted evidence + commit SHA recorded here (all PayPal steps)
 - [x] (if any step returns 403/unsupported) blocker recorded: no 403; one 415 on numbering, cause found and fixed. Orders v2 fallback not needed so far
-- [ ] CI run green on GitHub (after the remote exists)
+- [x] CI run green on GitHub: [run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788) on `63473d8`, backend + frontend success
 
 The old `--create-draft --send` combination was removed. Sending is only possible with
 `--send-invoice-id`, which never creates an invoice (tested in
 `tests/unit/test_paypal_send_script.py`).
+
+### P0 exit review (2026-11-10)
+
+**Repository:** https://github.com/Youssef-Boussabah/Elide (public, MIT detected by GitHub,
+default branch `main`). Created by the agent in Chrome with no auto-generated files; pushed
+with Git. Pre-publication audit: all blobs in all commits scanned for the real client id,
+secret, Sandbox payer email/local part, payer link, merchant id, token/key patterns and
+email-like strings: **0 real hits** (only synthetic test values and lockfile `name@version`
+strings). `.env` and `evidence/**/raw/` never tracked. Author/committer email rewritten to
+the GitHub noreply address before the first push (owner decision; trees unchanged; map in
+`evidence/COMMIT_SHA_MAP_2026-11-10.md`). Local Windows user paths in the environment audit
+replaced with `%USERPROFILE%`. Older commits still contain those paths (username only; no
+secret).
+
+**CI:** [run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788), commit `63473d8bb2ab0bb8296e8443ee78709f80f6cb67`, push to
+`main`, started 2026-11-10T22:35:48Z, conclusion **success** (32 s).
+
+| Job | Steps (all success) | Result |
+|---|---|---|
+| backend | `uv sync --locked`, `ruff check`, `ruff format --check`, `alembic upgrade head` (Postgres 16 service), `pytest` | **77 passed, 0 skipped**, 1 warning (known Starlette deprecation) |
+| frontend | `pnpm install --frozen-lockfile`, `typecheck`, `lint`, `test`, `build` | Vitest **3 passed**; build pass |
+
+**Clean clone (2026-11-10, Windows, `git clone` of the public repo into a scratch dir):**
+109 tracked files, no `.env` shipped. Followed README: `uv sync --locked` ✓, `cp .env.example
+.env`, `ruff check` / `format --check` ✓, `alembic upgrade head` ✓, `pytest` **77 passed**,
+`uvicorn` → `GET /health` 200, `GET /health/ready` 200 (`database: ok`, PostgreSQL 16.15),
+`pnpm install --frozen-lockfile` ✓, `typecheck` / `lint` ✓, Vitest 3 passed, `build` ✓,
+`pnpm dev` → `GET localhost:5173/` 200 with `#root`, proxy `GET /api/health/ready` 200.
+Caveat: the clone used the already-running `elide-db` container on 5433 instead of its own
+`docker compose up`, because `compose.yaml` fixes `container_name: elide-db` and two
+checkouts on one machine would clash. A fresh machine would run `docker compose up -d --wait
+db` as documented (not separately re-tested here).
+
+**Gate evidence (all eight items):**
+
+| # | Gate item | Evidence | Class |
+|---|---|---|---|
+| 1 | OAuth token server-side | run `20261110T214449Z`, HTTP 200, invoicing scope | Sandbox-verified |
+| 2 | Invoicing v2 accessible to the owned merchant | same run, `GET /v2/invoicing/invoices` 200 | Sandbox-verified |
+| 3 | Draft created; provider total and discount behavior observed | run `20261110T214515Z` (201) + `20261110T214717Z`; total 99000, discount returned `-10.00` | Sandbox-verified |
+| 4 | Invoice sent; hosted payer link observed | run `20261110T220152Z`; send 200, `SENT`, `rel=payer-view` link (git-ignored) | Sandbox-verified |
+| 5 | Payer completes payment; provider GET confirms | runs `20261110T221823Z`, `20261110T221827Z`; `PAID`, USD 990.00, 1 transaction, remaining 0 | Sandbox-verified (payment itself: owner browser action) |
+| 6 | Redacted evidence + commit SHA recorded | `evidence/paypal-sandbox/runs/*.json`, reconciliation record, SHA map | Repository |
+| 7 | 403/unsupported blockers recorded; fallback evaluated | no 403; 415 on numbering fixed; Orders v2 fallback not needed | Sandbox-verified |
+| 8 | CI green on GitHub | [run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788) | CI |
+
+**Remaining items (not P0 blockers):**
+- INV-1 timestamp discrepancy (open investigation).
+- `compose.yaml` fixed container name prevents two checkouts running side by side (minor).
+- Starlette/httpx `TestClient` deprecation warning (ADR-0004).
+- GitHub shows `claude` as a contributor because commits carry a `Co-Authored-By` trailer.
+- Local branch `backup/pre-noreply-rewrite` holds the pre-rewrite commits (contains the
+  owner's personal email in metadata). **Not pushed.** Delete locally once the owner is
+  satisfied.
+- Not implemented (by design, P1+): money model, ledger, idempotent posting, webhooks,
+  planner, AI, UI. One provider transaction is **not** duplicate-posting protection.
+
+**Recommended P1 starting tasks** (execution plan Phase 1, D006/D008, ADR-0007), each with
+tests first:
+1. Money value types in `api/domain/`: integer USD cents, currency guard rejecting non-USD
+   as capacity, no floats; Hypothesis properties.
+2. Invoice identity + immutable revisions (original amount, discount, due date in UTC +
+   merchant TZ) and the settlement identity
+   `original_open = cash_applied + authorized_concession + valid_noncash_setoff + remaining_open`.
+3. Capacity model with observed / held / attested / unknown classes and
+   `deployable = max(0, verified_spendable − protected_reserve − committed)`; incoming
+   receivables add zero until verified; provider `PAID` never becomes spendable (D006).
+4. Provider settlement record type carrying gross, fee, net, settlement currency/amount,
+   FX rate and provenance separately (fixture: capture `4J016440MV5285528`).
+5. Append-only balanced journal (`api/accounting/`) with Alembic migration and an
+   idempotency key per provider event (e.g. `paypal_capture:<id>`): replay posts once.
+   Integration tests against PostgreSQL.
+6. Seed fixtures: canonical buyer $1,490 / $500 reserve / two $990 choices / $900 + $800
+   downstream; AI negotiation scenario $5 → $10 discount; unit cases held $990 receipt,
+   supplier $150 reserve shortfall $60, duplicate obligation.
 
 ### Owner decisions (2026-11-10)
 - **F1 (currency):** keep the existing Canadian Sandbox Business account and its payment
@@ -239,3 +314,8 @@ The old `--create-draft --send` combination was removed. Sending is only possibl
   tracked). Owner chose the GitHub noreply address: author/committer email of all 9 local
   commits rewritten before first push (trees unchanged). SHAs cited above and in evidence
   files are the pre-rewrite SHAs; see `evidence/COMMIT_SHA_MAP_2026-11-10.md`.
+- 2026-11-10 (Claude Code, Opus 5.5): created public repo `Youssef-Boussabah/Elide` in
+  Chrome (empty, public), pushed `main` with Git. CI run #1 green (backend 77 passed,
+  0 skipped; frontend 3 passed, build ok). Clean clone from GitHub verified end to end.
+  Fixed repo description typo. P0 marked complete pending owner review. No P1 work.
+  **Next task:** owner reviews P0; then start P1 task 1 (money value types).
