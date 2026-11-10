@@ -75,6 +75,7 @@ Owner configured a dedicated Sandbox Merchant app with Invoicing enabled. Env ch
 | 4. Send (`POST .../send`, `send_to_recipient=true`, `PayPal-Request-Id=elide-8a59efe9-8618-40e7-80bf-83d5373455c7`) | 200 | see run `20261110T220152Z` | Owner-approved. Exactly this invoice sent; no new invoice created (`total_items=1` throughout) | **Sandbox-verified** |
 | 6. Post-send GET | 200 | see run `20261110T220152Z` | Status **`SENT`**; all terms unchanged; `due_amount` 99000 | **Sandbox-verified** |
 | 7. Hosted payer link | — | — | Returned by PayPal in the send response (`rel=payer-view`), host `www.sandbox.paypal.com`; not constructed. Stored only in git-ignored `evidence/paypal-sandbox/raw/`; fingerprint `redacted:f77a6cd3d419` | **Sandbox-verified** |
+| 7a. Hosted page inspected in Chrome (Claude in Chrome, no buttons clicked) | — | — | Page on `www.sandbox.paypal.com`, seller "Test Store": Invoice #0001, 1 × US$1,000.00, discount −US$10.00, total/amount due US$990.00, "Due by 01/12/2026" (day-first = 1 Dec 2026), issued Nov 10 2026, billed to the Sandbox personal payer. Consistent with the API record. No screenshot saved (page shows payer email) | **Browser observation** (not provider evidence) |
 | Actual payer payment | — | — | **Pending owner action** in the hosted page (Sandbox personal account). Not initiated, captured or simulated by Elide | Specified |
 | Orders v2 fallback | — | — | Not needed so far: Invoicing access works | Specified |
 

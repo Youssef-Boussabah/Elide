@@ -166,3 +166,25 @@ marker). On start:
 5. Work in small commits (`P<n>: <summary>`), never pushing without approval.
 6. Before stopping: run tests, update the tracker (status + session log + next task),
    and leave the tree committed or clearly described in the session log.
+
+## 12. Browser automation policy
+
+Use the agent's browser integration (Claude Code: Claude in Chrome) whenever possible
+for browser-based development work: developer dashboards and documentation, testing
+Elide's frontend, inspecting PayPal Sandbox pages and payment status, screenshots and UI
+investigation, end-to-end user workflows, and GitHub / deployment / CI dashboards.
+Agents without a browser integration (e.g. Codex CLI) state that and give the owner
+exact steps instead.
+
+- Handle routine browser interactions autonomously when site permission is available.
+  Do not repeatedly ask the owner to click buttons or navigate pages the agent can
+  reach itself. Work in a new tab; close tabs you opened unless the owner wants them.
+- **Stop for the owner** on: authentication needing the owner's password, MFA or a
+  CAPTCHA; final approval of any payment, **including Sandbox payments**; granting
+  sensitive permissions, spending money or choosing paid services; publishing or
+  deleting significant external resources without prior authorization.
+- Never expose credentials, payment/payer links or sensitive account details in chat,
+  logs, screenshots, evidence or Git commits. Do not save screenshots that show them.
+- PayPal: always label **browser observations** separately from **independently
+  verified API evidence** (provider GET). A hosted-page or browser "paid" confirmation
+  is not provider proof, and provider `PAID` does not mean funds are spendable (D006).
