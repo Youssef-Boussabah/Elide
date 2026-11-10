@@ -1,21 +1,26 @@
 """PayPal Sandbox feasibility check (Phase 0). Sandbox only; never moves real money.
 
-Reads credentials from the untracked local `.env`. Never prints secrets or tokens.
-Each step writes a redacted evidence record to evidence/paypal-sandbox/runs/.
+Reads credentials from the untracked local `.env`. Never prints secrets, tokens or the
+hosted payer link. Each run writes a redacted evidence record to
+evidence/paypal-sandbox/runs/.
 
-Steps (each later step is opt-in because it creates provider state):
-  1. auth        OAuth client-credentials token                      (always)
-  2. access      GET /v2/invoicing/invoices (invoice API reachable)   (always)
-  3. draft       create a merchant-owned draft invoice w/ discount    (--create-draft)
-  4. send        send it; check for a hosted payer-view link          (--send)
-  5. fetch       GET the invoice; compare provider amount/status      (with 3, or --invoice-id)
+Every run does: 1. OAuth token, 2. GET /v2/invoicing/invoices (API reachable).
+Then at most ONE of these modes (each acting on provider state is opt-in):
+
+  (no mode)                    stop after 1-2
+  --check-number               POST generate-next-invoice-number (creates no invoice)
+  --create-draft               create ONE draft ($1,000 - $10), GET it back. Never sends.
+  --invoice-id ID              GET an existing invoice and compare its terms
+      [--set-due-date DATE]    ...first full-update (PUT) a DRAFT's due date, then re-GET
+  --send-invoice-id ID         send an EXISTING draft after pre-send checks. Never creates.
 
 Usage (PowerShell, from repo root):
   uv run python scripts/paypal_sandbox_check.py
   uv run python scripts/paypal_sandbox_check.py --create-draft
-  uv run python scripts/paypal_sandbox_check.py --create-draft --send
-  uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-XXXX --expected-cents 99000
-  uv run python scripts/paypal_sandbox_check.py --check-number   (numbering only)
+  uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-X --set-due-date 2026-12-01
+  uv run python scripts/paypal_sandbox_check.py --send-invoice-id INV2-X \\
+      --expected-due-date 2026-12-01
+  uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-X --expected-status PAID
 
 The payment itself is performed by a human in the PayPal-hosted payer page, logged in
 as the Sandbox *personal* account. This script only observes the result afterwards.
@@ -33,6 +38,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import httpx  # noqa: E402
+
 from api.config import Settings  # noqa: E402
 from api.integrations.paypal.client import (  # noqa: E402
     PayPalConfigError,
@@ -41,11 +48,21 @@ from api.integrations.paypal.client import (  # noqa: E402
     build_draft_invoice,
     new_request_id,
 )
+from api.integrations.paypal.invoice_ops import (  # noqa: E402
+    InvoiceOpError,
+    build_due_date_update,
+    extract_payer_link,
+    presend_problems,
+    recipient_matches,
+)
 from api.integrations.paypal.invoice_terms import compare_terms, invoice_terms  # noqa: E402
-from api.integrations.paypal.redaction import redact  # noqa: E402
+from api.integrations.paypal.redaction import fingerprint, redact  # noqa: E402
 
 EVIDENCE_DIR = ROOT / "evidence" / "paypal-sandbox" / "runs"
+# Git-ignored (`evidence/**/raw/`): holds the hosted payer link for the owner only.
+RAW_DIR = ROOT / "evidence" / "paypal-sandbox" / "raw"
 INVOICING_SCOPE = "https://uri.paypal.com/services/invoicing"
+_ITEM_KEYS = ("name", "quantity", "unit_amount")
 
 
 def _git(*args: str) -> str:
@@ -112,69 +129,221 @@ def _fetch_and_compare(
     client: PayPalSandboxClient,
     rec: Recorder,
     invoice_id: str,
-    expected_cents: int | None,
     *,
-    face_cents: int | None = None,
-    discount_cents: int | None = None,
+    face_cents: int,
+    discount_cents: int,
     expected_status: str | None = None,
-) -> None:
-    """Independent GET of the provider resource; compare what PayPal stored to our request."""
+    expected_due_date: dt.date | None = None,
+    payer_email: str | None = None,
+    step: str = "fetch",
+) -> tuple[ProviderResponse, bool]:
+    """Independent GET of the provider resource; compare what PayPal stored to our request.
+
+    Returns (response, all_checks_passed).
+    """
     r = client.get_invoice(invoice_id)
     if not r.ok:
-        rec.add("fetch", r, "FAIL", "could not retrieve invoice")
-        return
+        rec.add(step, r, "FAIL", "could not retrieve invoice")
+        return r, False
     t = invoice_terms(r.body)
     notes = [
         f"status={t.status}",
         f"currency={t.currency}",
-        f"provider_total_cents={t.total_cents}",
-        f"provider_item_total_cents={t.item_total_cents}",
-        f"provider_invoice_discount_cents={t.invoice_discount_cents}"
-        f" (sign={t.invoice_discount_sign})",
-        f"provider_due_cents={t.due_cents}",
-        f"provider_tax_cents={t.tax_total_cents}",
+        f"total_cents={t.total_cents}",
+        f"item_total_cents={t.item_total_cents}",
+        f"invoice_discount_cents={t.invoice_discount_cents} (sign={t.invoice_discount_sign})",
+        f"tax_cents={t.tax_total_cents}",
+        f"due_amount_cents={t.due_cents}",
         f"payment_term={t.payment_term_type}",
+        f"due_date={t.due_date}",
+        f"recipients={t.recipient_count}",
     ]
-    verdict = "OK"
-    if face_cents is not None and discount_cents is not None:
-        mismatches = compare_terms(
-            t, face_cents=face_cents, discount_cents=discount_cents, expected_status=expected_status
-        )
-    else:
-        mismatches = list(t.problems)
-        if expected_cents is not None and t.total_cents != expected_cents:
-            mismatches.append(f"total_cents: provider={t.total_cents} expected={expected_cents}")
+    if t.paid_cents is not None or t.payment_transaction_count:
+        notes.append(f"paid_cents={t.paid_cents}; transactions={t.payment_transaction_count}")
+    mismatches = compare_terms(
+        t,
+        face_cents=face_cents,
+        discount_cents=discount_cents,
+        expected_status=expected_status,
+        expected_due_date=expected_due_date,
+    )
+    if payer_email is not None:
+        ok = recipient_matches(r.body, payer_email)
+        notes.append(f"recipient_is_configured_sandbox_payer={ok}")
+        if not ok:
+            mismatches.append("recipient differs from PAYPAL_SANDBOX_PAYER_EMAIL")
     if mismatches:
-        verdict = "MISMATCH"
         notes.append("mismatches=[" + " | ".join(mismatches) + "]")
     else:
-        notes.append("all requested terms match provider record")
-    if t.paid_cents is not None:
-        notes.append(f"provider_paid_cents={t.paid_cents}")
+        notes.append("all checked terms match provider record")
     if t.status == "PAID":
         notes.append("provider-confirmed PAID; NOT evidence funds are spendable (D006)")
-    rec.add("fetch", r, verdict, "; ".join(notes))
+    rec.add(step, r, "MISMATCH" if mismatches else "OK", "; ".join(notes))
+    return r, not mismatches
+
+
+def _recipient_fp(body: dict[str, Any]) -> str:
+    return fingerprint(json.dumps(body.get("primary_recipients"), sort_keys=True))
+
+
+def _items(body: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{k: i.get(k) for k in _ITEM_KEYS} for i in body.get("items") or []]
+
+
+def _update_due_date(client, rec, args, payer: str) -> int:
+    invoice_id, due = args.invoice_id, args.set_due_date
+    common = {"face_cents": args.face_cents, "discount_cents": args.discount_cents}
+    before, ok = _fetch_and_compare(
+        client, rec, invoice_id, expected_status="DRAFT", payer_email=payer, step="before", **common
+    )
+    if not ok:
+        rec.note("update", "BLOCKED", "current invoice not as expected; not updating")
+        return 1
+    try:
+        payload = build_due_date_update(before.body, due)
+    except (InvoiceOpError, KeyError, ValueError) as exc:
+        rec.note("update", "BLOCKED", f"cannot build update: {exc}")
+        return 1
+    r = client.update_invoice(invoice_id, payload)
+    rec.add("update", r, "OK" if r.ok else "FAIL", f"PUT full update, due_date={due}")
+    if not r.ok:
+        rec.note("update", "STOPPED", "update failed; no new invoice created, nothing sent")
+        return 1
+    after, ok = _fetch_and_compare(
+        client,
+        rec,
+        invoice_id,
+        expected_status="DRAFT",
+        expected_due_date=due,
+        payer_email=payer,
+        step="after",
+        **common,
+    )
+    if not after.ok:
+        return 1
+    same_recipient = _recipient_fp(before.body) == _recipient_fp(after.body)
+    same_items = _items(before.body) == _items(after.body)
+    same_number = (before.body.get("detail") or {}).get("invoice_number") == (
+        after.body.get("detail") or {}
+    ).get("invoice_number")
+    unchanged = same_recipient and same_items and same_number
+    rec.note(
+        "after",
+        "OK" if unchanged else "MISMATCH",
+        f"unchanged by update: recipient={same_recipient} line_item={same_items} "
+        f"invoice_number={same_number}",
+    )
+    return 0 if ok and unchanged else 1
+
+
+def _send_existing(client, rec, args, payer: str) -> int:
+    invoice_id = args.send_invoice_id
+    common = {"face_cents": args.face_cents, "discount_cents": args.discount_cents}
+    pre = client.get_invoice(invoice_id)
+    if not pre.ok:
+        rec.add("presend", pre, "FAIL", "could not retrieve invoice; not sending")
+        return 1
+    problems = presend_problems(
+        pre.body, payer_email=payer, expected_due_date=args.expected_due_date, **common
+    )
+    t = invoice_terms(pre.body)
+    summary = (
+        f"status={t.status}; total_cents={t.total_cents}; due_date={t.due_date}; "
+        f"recipient_is_configured_sandbox_payer={recipient_matches(pre.body, payer)}"
+    )
+    if problems:
+        rec.add("presend", pre, "BLOCKED", summary + "; NOT SENT: " + " | ".join(problems))
+        return 1
+    rec.add("presend", pre, "OK", summary + "; all pre-send checks pass")
+
+    request_id = new_request_id()
+    r: ProviderResponse | None
+    try:
+        r = client.send_invoice(invoice_id, request_id=request_id)
+    except httpx.TransportError as exc:
+        # Unknown outcome: look the invoice up, never blind-retry the send.
+        rec.note("send", "UNKNOWN", f"{type(exc).__name__}; looking up invoice instead of retry")
+        r = None
+    if r is not None:
+        rec.add("send", r, "OK" if r.ok else "FAIL", f"PayPal-Request-Id={request_id}")
+    post, _ = _fetch_and_compare(
+        client,
+        rec,
+        invoice_id,
+        expected_status=None,  # record PayPal's status, do not assume it
+        expected_due_date=args.expected_due_date,
+        payer_email=payer,
+        step="postsend",
+        **common,
+    )
+    if r is None or not r.ok:
+        return 1
+    link = extract_payer_link(r.body, post.body if post.ok else None)
+    if link is None:
+        rec.note("link", "WARN", "PayPal returned no Sandbox payer-view URL")
+        return 1
+    url, source = link
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    out = RAW_DIR / f"payer_link_{invoice_id}.txt"
+    out.write_text(url + "\n", encoding="utf-8")
+    rec.note("link", "OK", f"payer link from {source}; fingerprint={fingerprint(url)}")
+    print(
+        f"\nHosted payer link saved (not printed) to the git-ignored file:\n  "
+        f"{out.relative_to(ROOT)}\nOpen it in a private window logged in as the SANDBOX "
+        "PERSONAL account. Then verify:\n  uv run python scripts/paypal_sandbox_check.py "
+        f"--invoice-id {invoice_id} --expected-status PAID"
+    )
+    return 0
+
+
+def _create_draft(client, rec, args, payer: str) -> int:
+    r = client.generate_invoice_number()
+    number = r.body.get("invoice_number") if r.ok else None
+    rec.add("number", r, "OK" if r.ok else "WARN", f"invoice_number={number}")
+    payload = build_draft_invoice(
+        invoice_number=number,
+        face_cents=args.face_cents,
+        discount_cents=args.discount_cents,
+        payer_email=payer,
+        note="Synthetic Elide Sandbox feasibility test. Not a real obligation.",
+    )
+    r = client.create_draft_invoice(payload, request_id=new_request_id())
+    if not r.ok:
+        verdict = "BLOCKED" if r.status_code == 403 else "FAIL"
+        rec.add("draft", r, verdict, "draft invoice creation rejected")
+        return 1
+    invoice_id = r.body.get("id")
+    rec.add("draft", r, "OK", f"invoice_id={invoice_id} status={r.body.get('status')}")
+    _fetch_and_compare(
+        client,
+        rec,
+        invoice_id,
+        face_cents=args.face_cents,
+        discount_cents=args.discount_cents,
+        expected_status="DRAFT",
+        payer_email=payer,
+    )
+    rec.note("send", "SKIPPED", f"send separately: --send-invoice-id {invoice_id}")
+    return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("--create-draft", action="store_true")
-    ap.add_argument(
-        "--send", action="store_true", help="send the created draft (needs --create-draft)"
-    )
-    ap.add_argument("--invoice-id", help="only fetch/compare an existing invoice")
-    ap.add_argument("--expected-status", help="with --invoice-id, e.g. DRAFT, UNPAID, PAID")
-    ap.add_argument(
-        "--check-number",
-        action="store_true",
-        help="only call generate-next-invoice-number (creates no invoice)",
-    )
-    ap.add_argument("--expected-cents", type=int, help="expected provider total for --invoice-id")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--check-number", action="store_true")
+    mode.add_argument("--create-draft", action="store_true")
+    mode.add_argument("--invoice-id", help="GET/compare an existing invoice")
+    mode.add_argument("--send-invoice-id", help="send an EXISTING draft (never creates one)")
+    ap.add_argument("--set-due-date", type=dt.date.fromisoformat, help="with --invoice-id")
+    ap.add_argument("--expected-due-date", type=dt.date.fromisoformat)
+    ap.add_argument("--expected-status", help="with --invoice-id, e.g. DRAFT, SENT, PAID")
     ap.add_argument("--face-cents", type=int, default=100000, help="default $1,000.00 (synthetic)")
     ap.add_argument("--discount-cents", type=int, default=1000, help="default $10.00")
     args = ap.parse_args()
-    if args.send and not args.create_draft:
-        ap.error("--send requires --create-draft")
+    if args.set_due_date and not args.invoice_id:
+        ap.error("--set-due-date requires --invoice-id")
+    if args.set_due_date and args.set_due_date <= dt.datetime.now(dt.UTC).date():
+        ap.error("--set-due-date must be in the future")
 
     settings = Settings()
     try:
@@ -182,6 +351,9 @@ def main() -> int:
     except PayPalConfigError as exc:
         print(f"BLOCKED: {exc}\nSee README.md > 'PayPal Sandbox setup'. Nothing was called.")
         return 2
+    payer_secret = settings.paypal_sandbox_payer_email
+    payer = payer_secret.get_secret_value() if payer_secret else None
+    needs_payer = args.create_draft or args.send_invoice_id or args.set_due_date
 
     rec = Recorder()
     try:
@@ -193,117 +365,39 @@ def main() -> int:
         rec.add("auth", r, "OK", f"invoicing scope present={has_scope}")
 
         r = client.list_invoices()
-        if r.ok:
-            rec.add("access", r, "OK", f"total_items={r.body.get('total_items')}")
-        else:
-            rec.add(
-                "access",
-                r,
-                "BLOCKED" if r.status_code == 403 else "FAIL",
-                "invoice API not accessible to this app/account",
-            )
+        if not r.ok:
+            verdict = "BLOCKED" if r.status_code == 403 else "FAIL"
+            rec.add("access", r, verdict, "invoice API not accessible to this app/account")
             return 1
+        rec.add("access", r, "OK", f"total_items={r.body.get('total_items')}")
 
+        if needs_payer and not payer:
+            rec.note("config", "BLOCKED", "PAYPAL_SANDBOX_PAYER_EMAIL not set in .env")
+            return 2
+        if args.check_number:
+            r = client.generate_invoice_number()
+            number = r.body.get("invoice_number") if r.ok else None
+            rec.add("number", r, "OK" if r.ok else "FAIL", f"invoice_number={number}")
+            return 0 if r.ok else 1
+        if args.create_draft:
+            return _create_draft(client, rec, args, payer)
+        if args.send_invoice_id:
+            return _send_existing(client, rec, args, payer)
+        if args.invoice_id and args.set_due_date:
+            return _update_due_date(client, rec, args, payer)
         if args.invoice_id:
-            if (
-                args.expected_cents is not None
-                and args.expected_cents != args.face_cents - args.discount_cents
-            ):
-                ap.error("--expected-cents must equal --face-cents minus --discount-cents")
-            _fetch_and_compare(
+            _, ok = _fetch_and_compare(
                 client,
                 rec,
                 args.invoice_id,
-                args.expected_cents,
                 face_cents=args.face_cents,
                 discount_cents=args.discount_cents,
                 expected_status=args.expected_status,
+                expected_due_date=args.expected_due_date,
+                payer_email=payer,
             )
-            return 0
-
-        if args.check_number:
-            r = client.generate_invoice_number()
-            rec.add(
-                "number",
-                r,
-                "OK" if r.ok else "FAIL",
-                f"invoice_number={r.body.get('invoice_number') if r.ok else None}",
-            )
-            return 0 if r.ok else 1
-
-        if not args.create_draft:
-            rec.note("draft", "SKIPPED", "re-run with --create-draft to test draft creation")
-            return 0
-
-        if not settings.paypal_sandbox_payer_email:
-            rec.note("draft", "BLOCKED", "PAYPAL_SANDBOX_PAYER_EMAIL not set in .env")
-            return 2
-        payer = settings.paypal_sandbox_payer_email.get_secret_value()
-
-        r = client.generate_invoice_number()
-        number = r.body.get("invoice_number") if r.ok else None
-        rec.add("number", r, "OK" if r.ok else "WARN", f"invoice_number={number}")
-
-        expected = args.face_cents - args.discount_cents
-        payload = build_draft_invoice(
-            invoice_number=number,
-            face_cents=args.face_cents,
-            discount_cents=args.discount_cents,
-            payer_email=payer,
-            note="Synthetic Elide Sandbox feasibility test. Not a real obligation.",
-        )
-        r = client.create_draft_invoice(payload, request_id=new_request_id())
-        if not r.ok:
-            rec.add(
-                "draft",
-                r,
-                "BLOCKED" if r.status_code == 403 else "FAIL",
-                "draft invoice creation rejected",
-            )
-            return 1
-        invoice_id = r.body.get("id")
-        rec.add("draft", r, "OK", f"invoice_id={invoice_id} status={r.body.get('status')}")
-        _fetch_and_compare(
-            client,
-            rec,
-            invoice_id,
-            expected,
-            face_cents=args.face_cents,
-            discount_cents=args.discount_cents,
-            expected_status="DRAFT",
-        )
-
-        if not args.send:
-            rec.note(
-                "send", "SKIPPED", "re-run with --create-draft --send to test hosted payer flow"
-            )
-            return 0
-        r = client.send_invoice(invoice_id, request_id=new_request_id())
-        links = r.body.get("links", []) if isinstance(r.body, dict) else []
-        payer_view = next((link["href"] for link in links if link.get("rel") == "payer-view"), None)
-        rec.add(
-            "send",
-            r,
-            "OK" if r.ok and payer_view else ("FAIL" if not r.ok else "WARN"),
-            f"payer_view_link_returned={bool(payer_view)}",
-        )
-        _fetch_and_compare(
-            client,
-            rec,
-            invoice_id,
-            expected,
-            face_cents=args.face_cents,
-            discount_cents=args.discount_cents,
-            expected_status=None,  # post-send status is recorded, not assumed
-        )
-        if payer_view:
-            # Printed to your local terminal only; redacted in saved evidence.
-            print(
-                "\nHosted payer page (open in a browser logged in as the SANDBOX PERSONAL "
-                f"account, then pay):\n  {payer_view}\n"
-                f"Afterwards verify independently:\n  uv run python scripts/paypal_sandbox_check.py"
-                f" --invoice-id {invoice_id} --expected-cents {expected}"
-            )
+            return 0 if ok else 1
+        rec.note("mode", "SKIPPED", "no mode given; stopped after auth + access")
         return 0
     finally:
         path = rec.save()

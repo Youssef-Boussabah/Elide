@@ -93,6 +93,28 @@ def test_generate_number_sends_json_content_type():
     assert seen["ct"] == "application/json"
 
 
+def test_update_is_put_without_notifications():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/oauth2/token":
+            return _token_response()
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        seen["prefer"] = request.headers.get("Prefer")
+        return httpx.Response(200, json={"id": "INV2-X", "status": "DRAFT"})
+
+    client = PayPalSandboxClient(_settings(), transport=httpx.MockTransport(handler))
+    assert client.update_invoice("INV2-X", {"detail": {}}).ok
+    assert seen == {
+        "method": "PUT",
+        "path": "/v2/invoicing/invoices/INV2-X",
+        "params": {"send_to_recipient": "false", "send_to_invoicer": "false"},
+        "prefer": "return=representation",
+    }
+
+
 def test_create_sends_idempotency_key():
     seen = {}
 

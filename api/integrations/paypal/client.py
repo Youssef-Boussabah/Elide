@@ -179,6 +179,17 @@ class PayPalSandboxClient:
             prefer_representation=True,
         )
 
+    def update_invoice(self, invoice_id: str, payload: dict[str, Any]) -> ProviderResponse:
+        """Full update (PUT). No notification emails for this change."""
+        return self._call(
+            "update_invoice",
+            "PUT",
+            f"/v2/invoicing/invoices/{invoice_id}",
+            json=payload,
+            params={"send_to_recipient": "false", "send_to_invoicer": "false"},
+            prefer_representation=True,
+        )
+
     def send_invoice(self, invoice_id: str, request_id: str) -> ProviderResponse:
         return self._call(
             "send_invoice",

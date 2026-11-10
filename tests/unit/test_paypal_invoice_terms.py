@@ -14,6 +14,7 @@ def _body(total="990.00", discount="-10.00", status="DRAFT") -> dict:
         "id": "INV2-TEST",
         "status": status,
         "detail": {"currency_code": "USD", "payment_term": {"term_type": "NO_DUE_DATE"}},
+        "primary_recipients": [{"billing_info": {"email_address": "payer@example.com"}}],
         "items": [{"name": "x", "quantity": "1", "unit_amount": _usd("1000.00")}],
         "amount": {
             **_usd(total),

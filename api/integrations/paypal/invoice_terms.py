@@ -10,6 +10,7 @@ returns it as a negative value ("-10.00"), with the invoice total already reduce
 therefore accept a negative sign on the discount field only, and report its magnitude.
 """
 
+import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,15 +22,18 @@ class InvoiceTerms:
     status: str | None
     currency: str | None
     total_cents: int | None
-    due_cents: int | None
+    due_cents: int | None  # PayPal `due_amount`: remaining balance
     item_total_cents: int | None
     invoice_discount_cents: int | None  # magnitude; see module docstring
     invoice_discount_sign: str | None  # "negative" | "positive" | None if absent
     tax_total_cents: int | None
     payment_term_type: str | None
+    due_date: str | None
+    recipient_count: int
     item_unit_cents: list[int | None]
     item_quantities: list[str | None]
     paid_cents: int | None
+    payment_transaction_count: int
     problems: tuple[str, ...]
 
 
@@ -61,6 +65,8 @@ def invoice_terms(body: dict[str, Any]) -> InvoiceTerms:
     breakdown = amount.get("breakdown") or {}
     discount = (breakdown.get("discount") or {}).get("invoice_discount") or {}
     detail = body.get("detail") or {}
+    term = detail.get("payment_term") or {}
+    payments = body.get("payments") or {}
     items = body.get("items") or []
     discount_cents, discount_sign = _discount(discount.get("amount"), problems)
     return InvoiceTerms(
@@ -72,13 +78,16 @@ def invoice_terms(body: dict[str, Any]) -> InvoiceTerms:
         invoice_discount_cents=discount_cents,
         invoice_discount_sign=discount_sign,
         tax_total_cents=_cents(breakdown.get("tax_total"), "tax_total", problems),
-        payment_term_type=(detail.get("payment_term") or {}).get("term_type"),
+        payment_term_type=term.get("term_type"),
+        due_date=term.get("due_date"),
+        recipient_count=len(body.get("primary_recipients") or []),
         item_unit_cents=[
             _cents(i.get("unit_amount"), f"items[{n}].unit_amount", problems)
             for n, i in enumerate(items)
         ],
         item_quantities=[i.get("quantity") for i in items],
-        paid_cents=_cents((body.get("payments") or {}).get("paid_amount"), "paid", problems),
+        paid_cents=_cents(payments.get("paid_amount"), "paid", problems),
+        payment_transaction_count=len(payments.get("transactions") or []),
         problems=tuple(problems),
     )
 
@@ -89,10 +98,15 @@ def compare_terms(
     face_cents: int,
     discount_cents: int,
     expected_status: str | None = None,
+    expected_due_date: dt.date | None = None,
 ) -> list[str]:
-    """Return a list of mismatches between provider-recorded terms and what we requested."""
+    """Return a list of mismatches between provider-recorded terms and what we requested.
+
+    With `expected_status="PAID"` the remaining balance must be zero and the paid amount
+    must equal the total. Otherwise an unpaid invoice must owe its full total.
+    """
     expected_total = face_cents - discount_cents
-    checks = [
+    checks: list[tuple[str, Any, Any]] = [
         ("currency", terms.currency, "USD"),
         ("total_cents", terms.total_cents, expected_total),
         ("item_total_cents", terms.item_total_cents, face_cents),
@@ -100,11 +114,18 @@ def compare_terms(
         ("tax_total_cents", terms.tax_total_cents or 0, 0),
         ("item_unit_cents", terms.item_unit_cents, [face_cents]),
         ("item_quantities", terms.item_quantities, ["1"]),
+        ("recipient_count", terms.recipient_count, 1),
     ]
-    if terms.due_cents is not None and terms.paid_cents is None:
+    if expected_status == "PAID":
+        checks.append(("paid_cents", terms.paid_cents, expected_total))
+        checks.append(("due_cents (remaining)", terms.due_cents, 0))
+    elif terms.due_cents is not None and terms.paid_cents is None:
         checks.append(("due_cents", terms.due_cents, expected_total))
     if expected_status is not None:
         checks.append(("status", terms.status, expected_status))
+    if expected_due_date is not None:
+        checks.append(("payment_term", terms.payment_term_type, "DUE_ON_DATE_SPECIFIED"))
+        checks.append(("due_date", terms.due_date, expected_due_date.isoformat()))
     mismatches = [
         f"{k}: provider={got!r} expected={want!r}" for k, got, want in checks if got != want
     ]
