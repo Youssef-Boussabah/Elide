@@ -1,10 +1,11 @@
 # Local development services. `docker compose up -d db`
+# No fixed container_name: each checkout gets its own project-scoped container and volume.
+# Running two checkouts at once? Give the second one another port via ELIDE_DB_PORT.
 # The password below is a local-only development default, not a secret; override it
 # in your untracked .env (POSTGRES_PASSWORD) if you expose the port beyond localhost.
 services:
   db:
     image: postgres:16-alpine
-    container_name: elide-db
     environment:
       POSTGRES_DB: elide
       POSTGRES_USER: elide

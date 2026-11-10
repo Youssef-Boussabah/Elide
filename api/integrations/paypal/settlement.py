@@ -123,6 +123,9 @@ def settlement_from_runs(
             _ts(cap.get("create_time")),
             evidence_ref=f"{inv_ref}; {cap_ref}",
         ),
+        invoice_created_at=_ts(
+            ((inv.get("detail") or {}).get("metadata") or {}).get("create_time")
+        ),
     )
 
 

@@ -30,7 +30,7 @@ was upgraded or installed system-wide.
 | Claude Code | OK | 2.1.322 | |
 | Codex CLI | OK | codex-cli 0.167.0 | |
 | VS Code | OK | 1.145.2 (`code` on PATH) | recommended extensions in `.vscode/extensions.json` |
-| `psql` client | not installed | — | Not needed: `docker exec elide-db psql -U elide -d elide` |
+| `psql` client | not installed | — | Not needed: `docker compose exec db psql -U elide -d elide` |
 
 ## Ports
 
@@ -39,7 +39,7 @@ was upgraded or installed system-wide.
 | 8000 | FastAPI | free |
 | 5173 | Vite | free |
 | 5432 | (PostgreSQL default) | **taken** by `wslrelay.exe` (WSL distro service forwarded to Windows) once WSL started. Elide uses **5433** instead (ADR-0003) |
-| 5433 | Elide PostgreSQL | free → now used by `elide-db` |
+| 5433 | Elide PostgreSQL | free → now used by the compose `db` service (`127.0.0.1` only) |
 | 3000, 8080 | spare | free |
 
 Windows excluded TCP port ranges: 50000–50059 and 63353–63933 (none conflict).

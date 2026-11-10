@@ -74,6 +74,7 @@ class ProviderSettlement:
     exchange_rate: ExchangeRate | None
     timestamps: tuple[ProviderTimestamp, ...]
     provenance: Provenance
+    invoice_created_at: datetime | None = None  # provider-reported invoice creation time
 
     def __post_init__(self) -> None:
         if self.environment != "sandbox":
@@ -109,6 +110,8 @@ class ProviderSettlement:
                 )
         if not self.timestamps:
             raise SettlementEvidenceError("at least one provider timestamp is required")
+        if self.invoice_created_at is not None:
+            check_aware(self.invoice_created_at, "invoice_created_at")
 
     # -- derived facts ------------------------------------------------------------------
     @property
