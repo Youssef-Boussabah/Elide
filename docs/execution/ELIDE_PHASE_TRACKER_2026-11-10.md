@@ -334,7 +334,7 @@ Ledger / idempotency evidence (integration tests):
 | No hypothetical incoming balance treated as spendable | met | receipt-status tests, Scenario C, CAD settlement |
 | Held $990 receipt; $150 reserve shortfall $60; duplicate obligation | met | Scenarios C, D, E |
 | Ledger idempotency / concurrency / rollback | met | integration tests listed above |
-| CI green on the branch | see session log | GitHub Actions on `feat/p1-financial-kernel` |
+| CI green on the branch | met | [run #3](https://github.com/Youssef-Boussabah/Elide/actions/runs/42923590785) on `daabed964dcada9ee7e18c89212a6bf82a9e9e2a`: backend **259 passed, 0 skipped** (migration 0002 applied to the CI PostgreSQL service), frontend 3 passed + build |
 | Owner architectural review | **pending** | — |
 
 ### Dependencies for P2
@@ -414,3 +414,5 @@ model for verified availability, how plan reservations expire, fee model per leg
   `localhost`→`::1` connection hang (127.0.0.1 defaults + Alembic timeout) and removed the
   fixed compose container name (same volume reused). No PayPal calls. Not merged.
   **Next task:** owner architectural review of P1; P2 only after approval.
+- 2026-11-11 (Claude Code, Opus 5.5): CI now also runs on `feat/**` pushes. Run #3 on
+  `daabed9` green (backend 259 passed / 0 skipped; frontend ok). P1 stops here for review.
