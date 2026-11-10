@@ -43,5 +43,6 @@
   transaction (`payment_id` = capture id). `GET /v2/payments/captures/{payment_id}` works
   with the same app and returns the fee (29.01 USD), net (960.99 USD) and the merchant's
   receivable (CAD 1,306.79 at 1.35984225): the Sandbox merchant settles in CAD (tracker
-  finding F1). The invoice transaction timestamp is labeled `Z` but is 8 h behind the
-  capture's `create_time`; the capture timestamp is used as UTC.
+  finding FIN-2, decision F1 / ADR-0007). The invoice transaction timestamp and the
+  capture's `create_time` are both labeled `Z` but differ by ~8 h; cause not
+  determined (investigation item INV-1). Both raw values are preserved.

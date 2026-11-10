@@ -17,7 +17,7 @@ was upgraded or installed system-wide.
 |---|---|---|---|
 | Git | OK | 2.51.0.windows.1 | global user.name/email set; `core.autocrlf` unset globally, set to `false` in this repo + `.gitattributes` (LF) |
 | GitHub CLI (`gh`) | **Missing** | — | Only needed to create the remote repo/PRs. System install (winget) needs owner approval |
-| Python 3.12 | OK | 3.12.6 (`C:\Users\Youss\AppData\Local\Programs\Python\Python312`) | Pinned via `.python-version` |
+| Python 3.12 | OK | 3.12.6 (`%USERPROFILE%\AppData\Local\Programs\Python\Python312`) | Pinned via `.python-version` |
 | Other Pythons | present | 3.13.14, 3.13.12, 3.10.20, 3.9.25, 3.8.20 (uv-managed) | not used |
 | `python` on PATH | **Store alias stub** | `WindowsApps\python.exe` | Prints "Python was not found". Use `uv run` / `py -3.12`. Optional fix: Settings → Apps → Advanced app settings → App execution aliases (owner decision) |
 | uv | OK | 0.11.26 | |
@@ -46,10 +46,10 @@ Windows excluded TCP port ranges: 50000–50059 and 63353–63933 (none conflict
 
 ## OneDrive check
 
-- OneDrive is installed (`C:\Users\Youss\OneDrive`), but Known Folder redirection is **off**:
-  Documents → `C:\Users\Youss\Documents`, Downloads → `C:\Users\Youss\Downloads`,
-  Desktop → `C:\Users\Youss\Desktop` (registry `User Shell Folders`).
-- The project `C:\Users\Youss\Documents\Projects\Elide` is therefore **not synchronized** by
+- OneDrive is installed (`%USERPROFILE%\OneDrive`), but Known Folder redirection is **off**:
+  Documents → `%USERPROFILE%\Documents`, Downloads → `%USERPROFILE%\Downloads`,
+  Desktop → `%USERPROFILE%\Desktop` (registry `User Shell Folders`).
+- The project `%USERPROFILE%\Documents\Projects\Elide` is therefore **not synchronized** by
   OneDrive. No current risk.
 - If OneDrive folder backup is ever turned on for Documents, move the repo outside
   OneDrive first (for example `C:\dev\Elide`). Otherwise OneDrive would upload `.env`

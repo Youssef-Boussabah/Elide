@@ -2,11 +2,13 @@
   "kind": "derived-reconciliation",
   "environment": "sandbox",
   "evidence_class": "sandbox-verified",
-  "derived_from_runs": ["20261110T221823Z", "20261110T221827Z"],
+  "derived_from_runs": [
+    "20261110T221823Z",
+    "20261110T221827Z"
+  ],
   "derived_by": "Claude Code from provider GET responses; no value below is assumed",
   "invoice_id": "INV2-4RUV-XPEH-4F3C-T8BW",
   "invoice_number": "0001",
-  "dedupe_key": "paypal_capture:4J016440MV5285528",
   "posting": "NONE. No ledger exists yet (P1). Re-running verification re-reads PayPal and writes a new run file; it never posts money.",
   "provider_invoice": {
     "status": "PAID",
@@ -26,8 +28,7 @@
       "transaction_status": "SUCCESS",
       "amount_cents": 99000,
       "currency": "USD",
-      "payment_date_time_as_returned": "2026-11-10T14:15:49Z",
-      "timestamp_note": "Labeled Z but 8h behind the capture's create_time; treat capture create_time as authoritative UTC."
+      "payment_date_time_utc_as_labeled": "2026-11-10T14:15:49Z"
     }
   },
   "provider_capture": {
@@ -40,8 +41,15 @@
     "gross_cents_usd": 99000,
     "paypal_fee_cents_usd": 2901,
     "net_cents_usd": 96099,
-    "receivable": {"currency": "CAD", "value": "1306.79"},
-    "exchange_rate": {"source": "USD", "target": "CAD", "value": "1.35984225"},
+    "receivable": {
+      "currency": "CAD",
+      "value": "1306.79"
+    },
+    "exchange_rate": {
+      "source": "USD",
+      "target": "CAD",
+      "value": "1.35984225"
+    },
     "seller_protection": "ELIGIBLE"
   },
   "checks": {
@@ -56,5 +64,22 @@
   "not_established": [
     "Funds are spendable or available for any downstream leg (D006).",
     "That receivable USD equals 990.00: the merchant was credited 960.99 USD net, converted to 1306.79 CAD."
-  ]
+  ],
+  "proposed_p1_idempotency_key": "paypal_capture:4J016440MV5285528",
+  "duplicate_posting_protection": "NOT IMPLEMENTED. One provider transaction is an observation, not protection. Ledger and idempotency tests are Phase 1.",
+  "timestamps": {
+    "invoice_transaction_payment_date_time": "2026-11-10T14:15:49Z",
+    "capture_create_time": "2026-11-10T22:15:48Z",
+    "difference": "7h59m59s",
+    "status": "INV-1 open investigation; cause not determined; raw values preserved"
+  },
+  "owner_decision": "F1 (ADR-0007): keep CAD-settling Sandbox merchant; optimizer USD-only; CAD receipt is not spendable USD.",
+  "settlement_fields_provenance": {
+    "gross_cents_usd": "capture.seller_receivable_breakdown.gross_amount (run 20261110T221827Z)",
+    "paypal_fee_cents_usd": "capture.seller_receivable_breakdown.paypal_fee",
+    "net_cents_usd": "capture.seller_receivable_breakdown.net_amount",
+    "receivable": "capture.seller_receivable_breakdown.receivable_amount",
+    "exchange_rate": "capture.seller_receivable_breakdown.exchange_rate",
+    "paid_cents": "invoice.payments.paid_amount (run 20261110T221823Z)"
+  }
 }

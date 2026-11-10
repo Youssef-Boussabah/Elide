@@ -111,11 +111,11 @@ payer email, `@` or access token present):
   was fingerprinted afterwards (`redacted:6dbc83888cc3`); `merchant_id` is now a redacted key
 - `RECONCILIATION_INV2-4RUV-XPEH-4F3C-T8BW.json`: derived reconciliation of the runs above
 
-**Reconciliation (Sandbox-verified, derived only from provider GETs):** invoice total 99000 = paid 99000 = single transaction 99000 = capture gross 99000; remaining 0; gross − fee = 99000 − 2901 = 96099 net; 960.99 × 1.35984225 = 1306.7948 → CAD 1,306.79. Dedupe key `paypal_capture:4J016440MV5285528`. **No posting was made**: no ledger exists yet (P1), and re-running verification only re-reads PayPal and writes a new run file. Not established: that funds are spendable (D006), or that the merchant holds US$990.00 (it was credited US$960.99 net, converted to CAD).
+**Reconciliation (Sandbox-verified, derived only from provider GETs):** invoice total 99000 = paid 99000 = single transaction 99000 = capture gross 99000; remaining 0; gross − fee = 99000 − 2901 = 96099 net; 960.99 × 1.35984225 = 1306.7948 → CAD 1,306.79. **No posting was made**: no ledger exists yet. One provider transaction is a provider observation, **not** duplicate-posting protection: Elide's ledger and its idempotency tests are P1 work and are not implemented. Proposed P1 idempotency key: `paypal_capture:4J016440MV5285528`. Re-running verification only re-reads PayPal and writes a new run file. Not established: that funds are spendable (D006), or that the merchant holds US$990.00 (it was credited US$960.99 net, converted to CAD).
 
 **Browser vs provider:** the hosted page (7a) and the owner's browser confirmation (8) are browser observations. The PAID status, amounts and transaction come only from the provider GETs (9, 10).
 
-**Timestamp note:** the invoice transaction's `payment_date_time` is `2026-11-10T14:15:49Z`; the capture's `create_time` is `2026-11-10T22:15:48Z`. The invoice value is labeled UTC but is 8 h behind (consistent with Pacific time). Use the capture timestamp as UTC.
+**Timestamps (UTC, as returned):** invoice transaction `payment_date_time` = `2026-11-10T14:15:49Z`; capture `create_time` = `2026-11-10T22:15:48Z`; both are labeled UTC and differ by 7 h 59 min 59 s. Cause **not determined** (investigation item INV-1). Both raw values are preserved; neither is altered.
 
 Code changes made from these observations (ADR-0005 "Sandbox observations"): new
 `api/integrations/paypal/invoice_terms.py` (exact parse of provider terms; negative sign
@@ -132,8 +132,8 @@ content type; script compares every term, adds `--expected-status` and `--check-
 1. ~~Create Sandbox accounts + app, fill `.env`~~ (done by owner 2026-11-10).
 2. ~~Approve sending the existing draft `INV2-4RUV-XPEH-4F3C-T8BW`~~ (approved and sent 2026-11-10).
 3. ~~Pay the hosted invoice as the Sandbox Personal account~~ (paid 2026-11-10).
-4. **Decide finding F1 (CAD settlement)** before P1 (see *Open findings*).
-5. Approve GitHub repository name/visibility so CI can run (last P0 item).
+4. ~~Decide F1 (CAD settlement)~~ (decided 2026-11-10, see *Owner decisions*).
+5. ~~Approve GitHub repository~~ (approved 2026-11-10: public `Elide`, MIT, `main`).
 
 ### Remaining P0 gate requirements
 - [x] OAuth token obtained server-side (redacted evidence)
@@ -149,18 +149,37 @@ The old `--create-draft --send` combination was removed. Sending is only possibl
 `--send-invoice-id`, which never creates an invoice (tested in
 `tests/unit/test_paypal_send_script.py`).
 
-### Open findings (owner decision; no design change made)
-- **F1: Sandbox merchant settles in CAD.** The USD invoice was paid in USD, but PayPal
-  converted the net (US$960.99) to CAD 1,306.79 at 1.35984225. D008 fixes one currency
-  (USD cents) for the demo, and cross-currency is deferred (14_BUILD_ROADMAP R5). If
-  Elide models this merchant's spendable capacity, it would not be USD. Options:
-  (a) create a Sandbox Business account with country **United States** (USD default)
-  and a new Sandbox app linked to it, then re-run the auth/access checks; (b) keep this
-  account and treat its capacity as non-USD/unsupported; (c) check whether the existing
-  Sandbox account can hold a USD balance (not verified). Recommended: (a), as it matches
-  D008 without FX logic. Not a P0 blocker: the invoice payment route itself is proven.
-- **F2: PayPal fee is charged to the merchant.** US$29.01 on US$990.00 (net US$960.99).
-  P1's fee model and reserve checks must use provider-reported fees, not assumptions.
+### Owner decisions (2026-11-10)
+- **F1 (currency):** keep the existing Canadian Sandbox Business account and its payment
+  evidence. The initial optimizer stays USD-only (D008). The CAD receipt is **not**
+  US$990 of spendable USD. Settlement data is preserved field by field with provenance
+  (see *Settlement record*). A US Sandbox Business account may be created later for
+  USD-only integration tests; not created now, and it does not delay P1. See ADR-0007.
+- **F2 (GitHub):** create a public repository `Elide` under the owner's authenticated
+  personal account (`Youssef-Boussabah`), MIT license, default branch `main`, after a
+  security audit of tracked files and history.
+
+### Settlement record: capture `4J016440MV5285528` (Sandbox-verified)
+| Field | Value | Provenance |
+|---|---|---|
+| Gross | USD 990.00 (99000 cents) | capture `seller_receivable_breakdown.gross_amount`, run `20261110T221827Z` |
+| PayPal fee | USD 29.01 (2901 cents) | `...paypal_fee`, same run |
+| Net (USD-equivalent proceeds) | USD 960.99 (96099 cents) | `...net_amount`, same run |
+| Actual settlement credited | CAD 1,306.79 | `...receivable_amount`, same run |
+| Exchange rate | 1.35984225 USD→CAD | `...exchange_rate`, same run |
+| Invoice paid amount | USD 990.00 | invoice `payments.paid_amount`, run `20261110T221823Z` |
+| Spendable USD for downstream legs | **not established** | D006; settlement is CAD |
+
+### Findings
+- **FIN-1: fees reduce available proceeds.** US$29.01 on US$990.00 leaves US$960.99.
+  P1 fee model and reserve checks must use provider-reported fees, not assumptions.
+- **FIN-2: FX settlement creates a currency mismatch.** The payer paid USD, the
+  merchant was credited CAD. This invalidates any assumption that a received USD
+  payment can immediately fund a downstream USD payment.
+- **INV-1 (investigation): timestamp discrepancy.** Invoice transaction time and capture
+  time differ by 7 h 59 min 59 s while both are labeled UTC. Cause not determined.
+  Until resolved, record both raw values and do not use either for ordering-critical logic
+  without noting the source.
 
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
@@ -210,3 +229,7 @@ The old `--create-draft --send` combination was removed. Sending is only possibl
   payment gate met; P0 remains partial only for the GitHub CI run.
   **Next task:** owner decides F1 (CAD settlement) and approves a GitHub remote; run CI
   and hold the P0 review before any P1 work.
+- 2026-11-10 (Claude Code, Opus 5.5): owner decisions F1 (keep CAD account, USD-only
+  optimizer, ADR-0007) and F2 (public GitHub repo) recorded. Timestamp wording changed
+  to an open investigation item (INV-1); duplicate-posting protection explicitly marked
+  as not implemented (P1). Pre-publication security audit started.
