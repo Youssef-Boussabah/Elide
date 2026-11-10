@@ -96,6 +96,7 @@ Owner configured a dedicated Sandbox Merchant app with Invoicing enabled. Env ch
 | Payment term | not sent | `NO_DUE_DATE` (PayPal default) | n/a; recorded |
 | Recipient | Sandbox personal payer | set (fingerprinted in evidence) | yes |
 
+Commit SHAs below are pre-rewrite; see `evidence/COMMIT_SHA_MAP_2026-11-10.md`.
 Redacted evidence (`evidence/paypal-sandbox/runs/`, scanned: no client id, secret,
 payer email, `@` or access token present):
 - `20261110T214449Z.json`: steps 1–2
@@ -233,3 +234,8 @@ The old `--create-draft --send` combination was removed. Sending is only possibl
   optimizer, ADR-0007) and F2 (public GitHub repo) recorded. Timestamp wording changed
   to an open investigation item (INV-1); duplicate-posting protection explicitly marked
   as not implemented (P1). Pre-publication security audit started.
+- 2026-11-10 (Claude Code, Opus 5.5): pre-publication audit passed (no credentials, tokens,
+  payer email, payer link or merchant id in any blob of any commit; `.env` and `raw/` never
+  tracked). Owner chose the GitHub noreply address: author/committer email of all 9 local
+  commits rewritten before first push (trees unchanged). SHAs cited above and in evidence
+  files are the pre-rewrite SHAs; see `evidence/COMMIT_SHA_MAP_2026-11-10.md`.
