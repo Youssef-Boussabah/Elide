@@ -173,10 +173,56 @@ def test_payer_link_refuses_non_sandbox_and_never_constructs():
     assert extract_payer_link({}, None) is None
 
 
-def test_paid_invoice_requires_zero_remaining_balance():
+def _txn(pid="P1", value="990.00", status="SUCCESS") -> dict:
+    # Shape mirrors the observed Sandbox payment transaction.
+    return {
+        "type": "PAYPAL",
+        "payment_id": pid,
+        "transaction_type": "SALE",
+        "method": "PAYPAL",
+        "amount": _usd(value),
+        "transaction_status": status,
+    }
+
+
+def _paid(*txns) -> dict:
     paid = _with_due(_draft(status="PAID"))
-    paid["payments"] = {"paid_amount": _usd("990.00"), "transactions": [{"payment_id": "P"}]}
+    paid["payments"] = {"paid_amount": _usd("990.00"), "transactions": list(txns or [_txn()])}
     paid["due_amount"] = _usd("0.00")
+    return paid
+
+
+def _paid_mismatches(body) -> list[str]:
+    return compare_terms(
+        invoice_terms(body), face_cents=100000, discount_cents=1000, expected_status="PAID"
+    )
+
+
+def test_paid_invoice_with_one_success_transaction_passes():
+    t = invoice_terms(_paid())
+    assert t.transaction_ids == ["P1"] and t.transaction_cents == [99000]
+    assert _paid_mismatches(_paid()) == []
+
+
+def test_duplicate_transaction_is_flagged_not_accepted():
+    m = _paid_mismatches(_paid(_txn("P1"), _txn("P2")))
+    assert any(s.startswith("payment_transaction_count") for s in m)
+
+
+@pytest.mark.parametrize(
+    ("txn", "needle"),
+    [
+        (_txn(value="980.00"), "transaction_cents"),
+        (_txn(status="PENDING"), "transaction_statuses"),
+        (_txn(pid=None), "transaction_id_present"),
+    ],
+)
+def test_bad_transaction_is_flagged(txn, needle):
+    assert any(s.startswith(needle) for s in _paid_mismatches(_paid(txn)))
+
+
+def test_paid_invoice_requires_zero_remaining_balance():
+    paid = _paid()
     t = invoice_terms(paid)
     assert compare_terms(t, face_cents=100000, discount_cents=1000, expected_status="PAID") == []
     paid["due_amount"] = _usd("10.00")

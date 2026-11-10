@@ -1,0 +1,255 @@
+{
+  "run_id": "20261110T221647Z",
+  "environment": "sandbox",
+  "commit_sha": "1316f79ce671702b59ca60e1e7ef1797b9d2d64c",
+  "evidence_class": "sandbox-observation",
+  "records": [
+    {
+      "step": "auth",
+      "verdict": "OK",
+      "notes": "invoicing scope present=True",
+      "operation": "oauth_token",
+      "method": "POST",
+      "endpoint": "/v1/oauth2/token",
+      "http_status": 200,
+      "paypal_debug_id": "f627577c0063b",
+      "paypal_request_id": null,
+      "elapsed_ms": 389,
+      "response_redacted": {
+        "token_type": "Bearer",
+        "expires_in": 31492,
+        "app_id_present": true,
+        "scopes": [
+          "https://api.paypal.com/v1/payments/.*",
+          "https://api.paypal.com/v1/vault/credit-card",
+          "https://api.paypal.com/v1/vault/credit-card/.*",
+          "https://uri.paypal.com/payments/payouts",
+          "https://uri.paypal.com/services/applications/webhooks",
+          "https://uri.paypal.com/services/billing-agreements",
+          "https://uri.paypal.com/services/checkout/one-click-with-merchant-issued-token",
+          "https://uri.paypal.com/services/checkout/payment-resources",
+          "https://uri.paypal.com/services/credit/client-offer-presentment/read",
+          "https://uri.paypal.com/services/disputes/create",
+          "https://uri.paypal.com/services/disputes/read-buyer",
+          "https://uri.paypal.com/services/disputes/read-seller",
+          "https://uri.paypal.com/services/disputes/update-seller",
+          "https://uri.paypal.com/services/documents/disputes/download",
+          "https://uri.paypal.com/services/invoicing",
+          "https://uri.paypal.com/services/payments/client-payments-eligibility",
+          "https://uri.paypal.com/services/payments/futurepayments",
+          "https://uri.paypal.com/services/payments/orders/client_sdk_orders_api",
+          "https://uri.paypal.com/services/payments/payment/authcapture",
+          "https://uri.paypal.com/services/payments/realtimepayment",
+          "https://uri.paypal.com/services/payments/refund",
+          "https://uri.paypal.com/services/pricing/exchange-currency/read",
+          "https://uri.paypal.com/services/pricing/quote-exchange-rates/read",
+          "https://uri.paypal.com/services/shipping/trackers/readwrite",
+          "https://uri.paypal.com/services/subscriptions/confirm-payment",
+          "openid"
+        ]
+      }
+    },
+    {
+      "step": "access",
+      "verdict": "OK",
+      "notes": "total_items=1",
+      "operation": "list_invoices",
+      "method": "GET",
+      "endpoint": "/v2/invoicing/invoices",
+      "http_status": 200,
+      "paypal_debug_id": "f627577b65719",
+      "paypal_request_id": null,
+      "elapsed_ms": 422,
+      "response_redacted": {
+        "total_pages": 1,
+        "total_items": 1,
+        "items": [
+          {
+            "id": "INV2-4RUV-XPEH-4F3C-T8BW",
+            "status": "PAID",
+            "detail": {
+              "currency_code": "USD",
+              "note": "Synthetic Elide Sandbox feasibility test. Not a real obligation.",
+              "invoice_number": "0001",
+              "invoice_date": "2026-11-10",
+              "payment_term": {
+                "due_date": "2026-12-01"
+              },
+              "viewed_by_recipient": false,
+              "group_draft": false,
+              "metadata": {
+                "create_time": "2026-11-10T21:45:18Z"
+              }
+            },
+            "primary_recipients": [
+              {
+                "billing_info": {
+                  "email_address": "redacted:94281907e2c4"
+                }
+              }
+            ],
+            "amount": {
+              "currency_code": "USD",
+              "value": "990.00"
+            },
+            "due_amount": {
+              "currency_code": "USD",
+              "value": "0.00"
+            },
+            "payments": {
+              "paid_amount": {
+                "currency_code": "USD",
+                "value": "990.00"
+              }
+            },
+            "links": [
+              {
+                "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW",
+                "rel": "self",
+                "method": "GET"
+              }
+            ],
+            "unilateral": false
+          }
+        ],
+        "links": [
+          {
+            "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices?page=1&page_size=1&total_required=true",
+            "rel": "self",
+            "method": "GET"
+          }
+        ]
+      }
+    },
+    {
+      "step": "fetch",
+      "verdict": "OK",
+      "notes": "status=PAID; currency=USD; total_cents=99000; item_total_cents=100000; invoice_discount_cents=1000 (sign=negative); tax_cents=0; due_amount_cents=0; payment_term=DUE_ON_DATE_SPECIFIED; due_date=2026-12-01; recipients=1; paid_cents=99000; transactions=1; recipient_is_configured_sandbox_payer=True; all checked terms match provider record; provider-confirmed PAID; NOT evidence funds are spendable (D006)",
+      "operation": "get_invoice",
+      "method": "GET",
+      "endpoint": "/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW",
+      "http_status": 200,
+      "paypal_debug_id": "f6275773b2b44",
+      "paypal_request_id": null,
+      "elapsed_ms": 312,
+      "response_redacted": {
+        "id": "INV2-4RUV-XPEH-4F3C-T8BW",
+        "status": "PAID",
+        "detail": {
+          "currency_code": "USD",
+          "note": "Synthetic Elide Sandbox feasibility test. Not a real obligation.",
+          "category_code": "SHIPPABLE",
+          "invoice_number": "0001",
+          "invoice_date": "2026-11-10",
+          "payment_term": {
+            "term_type": "DUE_ON_DATE_SPECIFIED",
+            "due_date": "2026-12-01"
+          },
+          "viewed_by_recipient": false,
+          "group_draft": false,
+          "metadata": {
+            "create_time": "2026-11-10T21:45:18Z",
+            "last_update_time": "2026-11-10T22:15:49Z",
+            "first_sent_time": "2026-11-10T22:01:53Z",
+            "last_sent_time": "2026-11-10T22:01:53Z",
+            "created_by_flow": "REGULAR_SINGLE",
+            "recipient_view_url": "redacted:5748b0ec3270",
+            "invoicer_view_url": "redacted:72a336642d79",
+            "caller_type": "API_V2_INVOICE",
+            "spam_info": {}
+          },
+          "archived": false
+        },
+        "invoicer": {},
+        "primary_recipients": [
+          {
+            "billing_info": {
+              "email_address": "redacted:94281907e2c4"
+            }
+          }
+        ],
+        "items": [
+          {
+            "id": "ITEM-35G5379708485325V",
+            "name": "Elide Sandbox feasibility test (synthetic, not a real obligation)",
+            "quantity": "1",
+            "unit_amount": {
+              "currency_code": "USD",
+              "value": "1000.00"
+            },
+            "unit_of_measure": "QUANTITY"
+          }
+        ],
+        "configuration": {
+          "tax_calculated_after_discount": false,
+          "tax_inclusive": false,
+          "allow_tip": false,
+          "allow_only_pay_by_bank": false,
+          "allow_vba_payments": false,
+          "save_item_for_future": true,
+          "template_id": "TEMP-55L44228B68753352"
+        },
+        "amount": {
+          "breakdown": {
+            "item_total": {
+              "currency_code": "USD",
+              "value": "1000.00"
+            },
+            "discount": {
+              "invoice_discount": {
+                "amount": {
+                  "currency_code": "USD",
+                  "value": "-10.00"
+                }
+              },
+              "item_discount": {
+                "currency_code": "USD",
+                "value": "0.00"
+              }
+            },
+            "tax_total": {
+              "currency_code": "USD",
+              "value": "0.00"
+            }
+          },
+          "currency_code": "USD",
+          "value": "990.00"
+        },
+        "due_amount": {
+          "currency_code": "USD",
+          "value": "0.00"
+        },
+        "payments": {
+          "paid_amount": {
+            "currency_code": "USD",
+            "value": "990.00"
+          },
+          "transactions": [
+            {
+              "type": "PAYPAL",
+              "payment_id": "4J016440MV5285528",
+              "transaction_type": "SALE",
+              "payment_date": "2026-11-10",
+              "payment_date_time": "2026-11-10T14:15:49Z",
+              "method": "PAYPAL",
+              "amount": {
+                "currency_code": "USD",
+                "value": "990.00"
+              },
+              "transaction_status": "SUCCESS"
+            }
+          ]
+        },
+        "links": [
+          {
+            "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW",
+            "rel": "self",
+            "method": "GET"
+          }
+        ],
+        "unilateral": false,
+        "settings": {}
+      }
+    }
+  ]
+}

@@ -296,6 +296,22 @@ def _send_existing(client, rec, args, payer: str) -> int:
     return 0
 
 
+def _lookup_payment(client, rec, payment_id: str) -> int:
+    """Read-only. Records PayPal's gross/fee/net and any exchange rate, exactly as returned."""
+    r = client.get_capture(payment_id)
+    if not r.ok:
+        verdict = "BLOCKED" if r.status_code in (401, 403) else "INFO"
+        rec.add("payment", r, verdict, "capture resource not readable with this id/app")
+        return 1
+    b = r.body if isinstance(r.body, dict) else {}
+    srb = b.get("seller_receivable_breakdown") or {}
+    parts = [f"status={b.get('status')}", f"amount={b.get('amount')}"]
+    for k in ("gross_amount", "paypal_fee", "net_amount", "receivable_amount", "exchange_rate"):
+        parts.append(f"{k}={srb.get(k)}")
+    rec.add("payment", r, "OK", "; ".join(parts))
+    return 0
+
+
 def _create_draft(client, rec, args, payer: str) -> int:
     r = client.generate_invoice_number()
     number = r.body.get("invoice_number") if r.ok else None
@@ -334,6 +350,9 @@ def main() -> int:
     mode.add_argument("--create-draft", action="store_true")
     mode.add_argument("--invoice-id", help="GET/compare an existing invoice")
     mode.add_argument("--send-invoice-id", help="send an EXISTING draft (never creates one)")
+    mode.add_argument(
+        "--payment-id", help="read-only GET /v2/payments/captures/{id} (fee/net/FX breakdown)"
+    )
     ap.add_argument("--set-due-date", type=dt.date.fromisoformat, help="with --invoice-id")
     ap.add_argument("--expected-due-date", type=dt.date.fromisoformat)
     ap.add_argument("--expected-status", help="with --invoice-id, e.g. DRAFT, SENT, PAID")
@@ -379,6 +398,8 @@ def main() -> int:
             number = r.body.get("invoice_number") if r.ok else None
             rec.add("number", r, "OK" if r.ok else "FAIL", f"invoice_number={number}")
             return 0 if r.ok else 1
+        if args.payment_id:
+            return _lookup_payment(client, rec, args.payment_id)
         if args.create_draft:
             return _create_draft(client, rec, args, payer)
         if args.send_invoice_id:

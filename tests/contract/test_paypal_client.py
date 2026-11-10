@@ -93,6 +93,20 @@ def test_generate_number_sends_json_content_type():
     assert seen["ct"] == "application/json"
 
 
+def test_get_capture_is_read_only_get():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/oauth2/token":
+            return _token_response()
+        seen["call"] = (request.method, request.url.path, request.content)
+        return httpx.Response(200, json={"id": "CAP1", "status": "COMPLETED"})
+
+    client = PayPalSandboxClient(_settings(), transport=httpx.MockTransport(handler))
+    assert client.get_capture("CAP1").ok
+    assert seen["call"] == ("GET", "/v2/payments/captures/CAP1", b"")
+
+
 def test_update_is_put_without_notifications():
     seen = {}
 

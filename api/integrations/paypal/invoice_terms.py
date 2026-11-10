@@ -34,6 +34,9 @@ class InvoiceTerms:
     item_quantities: list[str | None]
     paid_cents: int | None
     payment_transaction_count: int
+    transaction_cents: list[int | None]
+    transaction_statuses: list[str | None]
+    transaction_ids: list[str | None]
     problems: tuple[str, ...]
 
 
@@ -68,6 +71,7 @@ def invoice_terms(body: dict[str, Any]) -> InvoiceTerms:
     term = detail.get("payment_term") or {}
     payments = body.get("payments") or {}
     items = body.get("items") or []
+    txns = payments.get("transactions") or []
     discount_cents, discount_sign = _discount(discount.get("amount"), problems)
     return InvoiceTerms(
         status=body.get("status"),
@@ -87,7 +91,13 @@ def invoice_terms(body: dict[str, Any]) -> InvoiceTerms:
         ],
         item_quantities=[i.get("quantity") for i in items],
         paid_cents=_cents(payments.get("paid_amount"), "paid", problems),
-        payment_transaction_count=len(payments.get("transactions") or []),
+        payment_transaction_count=len(txns),
+        transaction_cents=[
+            _cents(x.get("amount"), f"transactions[{n}].amount", problems)
+            for n, x in enumerate(txns)
+        ],
+        transaction_statuses=[x.get("transaction_status") for x in txns],
+        transaction_ids=[x.get("payment_id") for x in txns],
         problems=tuple(problems),
     )
 
@@ -102,8 +112,10 @@ def compare_terms(
 ) -> list[str]:
     """Return a list of mismatches between provider-recorded terms and what we requested.
 
-    With `expected_status="PAID"` the remaining balance must be zero and the paid amount
-    must equal the total. Otherwise an unpaid invoice must owe its full total.
+    With `expected_status="PAID"` the remaining balance must be zero, the paid amount
+    must equal the total, and there must be exactly one SUCCESS transaction for the total
+    (a second transaction would be a duplicate payment to investigate, not to post).
+    Otherwise an unpaid invoice must owe its full total.
     """
     expected_total = face_cents - discount_cents
     checks: list[tuple[str, Any, Any]] = [
@@ -119,6 +131,10 @@ def compare_terms(
     if expected_status == "PAID":
         checks.append(("paid_cents", terms.paid_cents, expected_total))
         checks.append(("due_cents (remaining)", terms.due_cents, 0))
+        checks.append(("payment_transaction_count", terms.payment_transaction_count, 1))
+        checks.append(("transaction_cents", terms.transaction_cents, [expected_total]))
+        checks.append(("transaction_statuses", terms.transaction_statuses, ["SUCCESS"]))
+        checks.append(("transaction_id_present", all(terms.transaction_ids), True))
     elif terms.due_cents is not None and terms.paid_cents is None:
         checks.append(("due_cents", terms.due_cents, expected_total))
     if expected_status is not None:

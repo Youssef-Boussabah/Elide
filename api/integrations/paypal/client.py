@@ -202,6 +202,11 @@ class PayPalSandboxClient:
     def get_invoice(self, invoice_id: str) -> ProviderResponse:
         return self._call("get_invoice", "GET", f"/v2/invoicing/invoices/{invoice_id}")
 
+    # -- payments v2 (read-only) --------------------------------------------------------
+    def get_capture(self, capture_id: str) -> ProviderResponse:
+        """Read a captured payment (fee/net/exchange breakdown). Never captures or refunds."""
+        return self._call("get_capture", "GET", f"/v2/payments/captures/{capture_id}")
+
 
 def new_request_id() -> str:
     return f"elide-{uuid.uuid4()}"
