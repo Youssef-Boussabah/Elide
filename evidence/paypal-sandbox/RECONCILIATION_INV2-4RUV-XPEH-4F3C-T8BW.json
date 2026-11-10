@@ -1,0 +1,60 @@
+{
+  "kind": "derived-reconciliation",
+  "environment": "sandbox",
+  "evidence_class": "sandbox-verified",
+  "derived_from_runs": ["20261110T221823Z", "20261110T221827Z"],
+  "derived_by": "Claude Code from provider GET responses; no value below is assumed",
+  "invoice_id": "INV2-4RUV-XPEH-4F3C-T8BW",
+  "invoice_number": "0001",
+  "dedupe_key": "paypal_capture:4J016440MV5285528",
+  "posting": "NONE. No ledger exists yet (P1). Re-running verification re-reads PayPal and writes a new run file; it never posts money.",
+  "provider_invoice": {
+    "status": "PAID",
+    "currency": "USD",
+    "item_total_cents": 100000,
+    "invoice_discount_cents": 1000,
+    "total_cents": 99000,
+    "paid_cents": 99000,
+    "remaining_due_cents": 0,
+    "due_date": "2026-12-01",
+    "transaction_count": 1,
+    "transaction": {
+      "payment_id": "4J016440MV5285528",
+      "type": "PAYPAL",
+      "transaction_type": "SALE",
+      "method": "PAYPAL",
+      "transaction_status": "SUCCESS",
+      "amount_cents": 99000,
+      "currency": "USD",
+      "payment_date_time_as_returned": "2026-11-10T14:15:49Z",
+      "timestamp_note": "Labeled Z but 8h behind the capture's create_time; treat capture create_time as authoritative UTC."
+    }
+  },
+  "provider_capture": {
+    "capture_id": "4J016440MV5285528",
+    "status": "COMPLETED",
+    "final_capture": true,
+    "invoice_id_matches": true,
+    "related_order_id": "7YW741992S8159210",
+    "create_time_utc": "2026-11-10T22:15:48Z",
+    "gross_cents_usd": 99000,
+    "paypal_fee_cents_usd": 2901,
+    "net_cents_usd": 96099,
+    "receivable": {"currency": "CAD", "value": "1306.79"},
+    "exchange_rate": {"source": "USD", "target": "CAD", "value": "1.35984225"},
+    "seller_protection": "ELIGIBLE"
+  },
+  "checks": {
+    "invoice_total_eq_paid": "99000 == 99000",
+    "paid_eq_single_transaction": "99000 == 99000",
+    "capture_gross_eq_invoice_paid": "99000 == 99000",
+    "gross_minus_fee_eq_net": "99000 - 2901 == 96099",
+    "net_times_rate_rounds_to_receivable": "960.99 x 1.35984225 = 1306.7948 -> 1306.79 CAD",
+    "remaining_balance_zero": true,
+    "duplicate_transactions": false
+  },
+  "not_established": [
+    "Funds are spendable or available for any downstream leg (D006).",
+    "That receivable USD equals 990.00: the merchant was credited 960.99 USD net, converted to 1306.79 CAD."
+  ]
+}

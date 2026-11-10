@@ -32,6 +32,8 @@ _SENSITIVE_KEYS = {
     "admin_area_1",
     "admin_area_2",
     "payer_id",
+    "merchant_id",
+    "account_id",
     "payer_email",
     "tax_id",
     "website",

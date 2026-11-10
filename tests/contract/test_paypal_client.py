@@ -175,3 +175,16 @@ def test_redaction_removes_pii_and_payer_links():
     assert "a@b.com" not in out
     assert "sandbox.paypal.com/invoice" not in out
     assert "INV2-AAAA" in out
+
+
+def test_redaction_hides_merchant_id_but_keeps_payment_ids():
+    # Shape mirrors the observed Sandbox capture resource.
+    body = {
+        "id": "CAPTURE123",
+        "invoice_id": "INV2-AAAA",
+        "payee": {"email_address": "m@example.com", "merchant_id": "MERCHANT42"},
+        "supplementary_data": {"related_ids": {"order_id": "ORDER9"}},
+    }
+    out = str(redact(body))
+    assert "MERCHANT42" not in out and "m@example.com" not in out
+    assert all(x in out for x in ("CAPTURE123", "INV2-AAAA", "ORDER9"))

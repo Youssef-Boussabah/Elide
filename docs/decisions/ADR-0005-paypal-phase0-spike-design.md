@@ -38,3 +38,10 @@
   `rel=payer-view` link on `www.sandbox.paypal.com` in the response body; status became
   `SENT` (run `20261110T220152Z`). Sending is a separate, by-id mode with pre-send checks;
   a draft is never created and sent in one command.
+- **Payment (2026-11-10):** after the owner paid in the hosted page, `GET` of the
+  invoice returned `PAID`, `paid_amount` 990.00 USD, `due_amount` 0.00, one `SUCCESS`
+  transaction (`payment_id` = capture id). `GET /v2/payments/captures/{payment_id}` works
+  with the same app and returns the fee (29.01 USD), net (960.99 USD) and the merchant's
+  receivable (CAD 1,306.79 at 1.35984225): the Sandbox merchant settles in CAD (tracker
+  finding F1). The invoice transaction timestamp is labeled `Z` but is 8 h behind the
+  capture's `create_time`; the capture timestamp is used as UTC.

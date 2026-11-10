@@ -1,9 +1,9 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-10, 22:02 UTC):** P0 **partial**. Local bootstrap is done and verified. PayPal Sandbox OAuth, Invoicing v2 access, draft creation with the $10 discount, due-date update, send and independent retrieval are **Sandbox-verified**; invoice `INV2-4RUV-XPEH-4F3C-T8BW` is **SENT** and awaiting the owner's manual Sandbox payment. No financial features are implemented. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-10, 22:20 UTC):** P0 **partial: PayPal payment gate met; only the GitHub CI run remains** (needs an owner-approved remote). Local bootstrap is done and verified. PayPal Sandbox OAuth, Invoicing v2 access, draft with the $10 discount, due-date update, send, owner payment and independent provider retrieval are **Sandbox-verified**: invoice `INV2-4RUV-XPEH-4F3C-T8BW` is **PAID**, US$990.00, one transaction, remaining balance 0. Open finding: the Sandbox merchant receives in **CAD** (see *Open findings*). No financial features are implemented. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
-| P0 | API access + hosted Sandbox invoice payment route proven | **Partial**: bootstrap done; OAuth, Invoicing access, draft, due-date update, send + GET Sandbox-verified; payer payment pending owner action; CI not run | Redacted API responses + provider IDs/status + code SHA |
+| P0 | API access + hosted Sandbox invoice payment route proven | **Partial**: PayPal Sandbox payment route proven (invoice PAID, provider-verified); CI run on GitHub not yet possible (no remote) | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | Not started | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | Not started | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
@@ -76,7 +76,9 @@ Owner configured a dedicated Sandbox Merchant app with Invoicing enabled. Env ch
 | 6. Post-send GET | 200 | see run `20261110T220152Z` | Status **`SENT`**; all terms unchanged; `due_amount` 99000 | **Sandbox-verified** |
 | 7. Hosted payer link | — | — | Returned by PayPal in the send response (`rel=payer-view`), host `www.sandbox.paypal.com`; not constructed. Stored only in git-ignored `evidence/paypal-sandbox/raw/`; fingerprint `redacted:f77a6cd3d419` | **Sandbox-verified** |
 | 7a. Hosted page inspected in Chrome (Claude in Chrome, no buttons clicked) | — | — | Page on `www.sandbox.paypal.com`, seller "Test Store": Invoice #0001, 1 × US$1,000.00, discount −US$10.00, total/amount due US$990.00, "Due by 01/12/2026" (day-first = 1 Dec 2026), issued Nov 10 2026, billed to the Sandbox personal payer. Consistent with the API record. No screenshot saved (page shows payer email) | **Browser observation** (not provider evidence) |
-| Actual payer payment | — | — | **Pending owner action** in the hosted page (Sandbox personal account). Not initiated, captured or simulated by Elide | Specified |
+| 8. Owner payment in hosted page | — | — | Owner logged in as the Sandbox personal account and paid in the browser (2026-11-10). Not initiated, captured or simulated by Elide | Owner action (browser) |
+| 9. Independent provider GET after payment (`GET /v2/invoicing/invoices/{id}`; runs `20261110T221647Z` and `20261110T221823Z` with strict checks, commit `265726e`) | 200 | `f6275773b2b44` (first) | Status **`PAID`**; `paid_amount` USD 990.00 (99000); `due_amount` USD 0.00; exactly **1** transaction: `payment_id` **`4J016440MV5285528`**, type `PAYPAL`, `SALE`, `SUCCESS`, USD 990.00; terms unchanged (total 99000, discount 1000, due 2026-12-01, sole recipient = configured payer) | **Sandbox-verified** |
+| 10. Payment resource (`GET /v2/payments/captures/4J016440MV5285528`, run `20261110T221827Z`) | 200 | `f310218d8914a` | `COMPLETED`, `final_capture=true`, `invoice_id` matches, order `7YW741992S8159210`, created 2026-11-10T22:15:48Z. Gross USD 990.00, **PayPal fee USD 29.01**, net USD 960.99, **receivable CAD 1,306.79** at USD→CAD **1.35984225**. Seller protection `ELIGIBLE` | **Sandbox-verified** |
 | Orders v2 fallback | — | — | Not needed so far: Invoicing access works | Specified |
 
 **Provider-recorded terms of `INV2-4RUV-XPEH-4F3C-T8BW`** (from GET, in cents):
@@ -103,6 +105,17 @@ payer email, `@` or access token present):
 - `20261110T220139Z.json`: due-date update (before GET, PUT, after GET), commit `c80173d`
 - `20261110T220152Z.json`: pre-send GET, send, post-send GET (`SENT`), commit `c80173d`
   (recorded `+dirty` only because the previous run's evidence file was untracked)
+- `20261110T221647Z.json`: first post-payment GET (`PAID`), commit `1316f79`
+- `20261110T221823Z.json`: post-payment GET with strict checks (one SUCCESS transaction), commit `265726e`
+- `20261110T221827Z.json`: capture lookup. `payee.merchant_id` was saved unredacted by that run and
+  was fingerprinted afterwards (`redacted:6dbc83888cc3`); `merchant_id` is now a redacted key
+- `RECONCILIATION_INV2-4RUV-XPEH-4F3C-T8BW.json`: derived reconciliation of the runs above
+
+**Reconciliation (Sandbox-verified, derived only from provider GETs):** invoice total 99000 = paid 99000 = single transaction 99000 = capture gross 99000; remaining 0; gross − fee = 99000 − 2901 = 96099 net; 960.99 × 1.35984225 = 1306.7948 → CAD 1,306.79. Dedupe key `paypal_capture:4J016440MV5285528`. **No posting was made**: no ledger exists yet (P1), and re-running verification only re-reads PayPal and writes a new run file. Not established: that funds are spendable (D006), or that the merchant holds US$990.00 (it was credited US$960.99 net, converted to CAD).
+
+**Browser vs provider:** the hosted page (7a) and the owner's browser confirmation (8) are browser observations. The PAID status, amounts and transaction come only from the provider GETs (9, 10).
+
+**Timestamp note:** the invoice transaction's `payment_date_time` is `2026-11-10T14:15:49Z`; the capture's `create_time` is `2026-11-10T22:15:48Z`. The invoice value is labeled UTC but is 8 h behind (consistent with Pacific time). Use the capture timestamp as UTC.
 
 Code changes made from these observations (ADR-0005 "Sandbox observations"): new
 `api/integrations/paypal/invoice_terms.py` (exact parse of provider terms; negative sign
@@ -118,23 +131,36 @@ content type; script compares every term, adds `--expected-status` and `--check-
 ### Owner actions required
 1. ~~Create Sandbox accounts + app, fill `.env`~~ (done by owner 2026-11-10).
 2. ~~Approve sending the existing draft `INV2-4RUV-XPEH-4F3C-T8BW`~~ (approved and sent 2026-11-10).
-3. **Now:** open the link in `evidence/paypal-sandbox/raw/payer_link_INV2-4RUV-XPEH-4F3C-T8BW.txt`
-   and pay $990.00 as the Sandbox Personal account.
-4. Later: approve GitHub repository name/visibility before any remote is created.
+3. ~~Pay the hosted invoice as the Sandbox Personal account~~ (paid 2026-11-10).
+4. **Decide finding F1 (CAD settlement)** before P1 (see *Open findings*).
+5. Approve GitHub repository name/visibility so CI can run (last P0 item).
 
 ### Remaining P0 gate requirements
 - [x] OAuth token obtained server-side (redacted evidence)
 - [x] Invoicing v2 accessible for the owned Sandbox merchant
 - [x] Draft invoice created; provider-computed total observed (discount behavior recorded: returned negative, total 99000)
 - [x] Invoice sent; hosted payer link observed (owner-approved; status `SENT`; link from PayPal's send response)
-- [ ] Sandbox payer completes payment; provider GET confirms amount/currency/status
-- [x] Redacted evidence + commit SHA recorded here (for steps 1–3, 5)
+- [x] Sandbox payer completes payment; provider GET confirms amount/currency/status (PAID, USD 990.00, 1 transaction `4J016440MV5285528`, remaining 0)
+- [x] Redacted evidence + commit SHA recorded here (all PayPal steps)
 - [x] (if any step returns 403/unsupported) blocker recorded: no 403; one 415 on numbering, cause found and fixed. Orders v2 fallback not needed so far
 - [ ] CI run green on GitHub (after the remote exists)
 
 The old `--create-draft --send` combination was removed. Sending is only possible with
 `--send-invoice-id`, which never creates an invoice (tested in
 `tests/unit/test_paypal_send_script.py`).
+
+### Open findings (owner decision; no design change made)
+- **F1: Sandbox merchant settles in CAD.** The USD invoice was paid in USD, but PayPal
+  converted the net (US$960.99) to CAD 1,306.79 at 1.35984225. D008 fixes one currency
+  (USD cents) for the demo, and cross-currency is deferred (14_BUILD_ROADMAP R5). If
+  Elide models this merchant's spendable capacity, it would not be USD. Options:
+  (a) create a Sandbox Business account with country **United States** (USD default)
+  and a new Sandbox app linked to it, then re-run the auth/access checks; (b) keep this
+  account and treat its capacity as non-USD/unsupported; (c) check whether the existing
+  Sandbox account can hold a USD balance (not verified). Recommended: (a), as it matches
+  D008 without FX logic. Not a P0 blocker: the invoice payment route itself is proven.
+- **F2: PayPal fee is charged to the merchant.** US$29.01 on US$990.00 (net US$960.99).
+  P1's fee model and reserve checks must use provider-reported fees, not assumptions.
 
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
@@ -175,3 +201,12 @@ The old `--create-draft --send` combination was removed. Sending is only possibl
   **Next task:** after the owner pays, run
   `uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-4RUV-XPEH-4F3C-T8BW --expected-status PAID --expected-due-date 2026-12-01`
   and record status, paid amount, currency and remaining balance here.
+- 2026-11-10 (Claude Code, Opus 5.5): owner paid the Sandbox invoice in the browser.
+  Independent provider GETs: invoice `PAID`, US$990.00 paid, 1 SUCCESS transaction
+  `4J016440MV5285528`, remaining 0; capture `COMPLETED`, fee US$29.01, net US$960.99,
+  receivable CAD 1,306.79 (rate 1.35984225). Added strict PAID checks (exactly one
+  SUCCESS transaction = total), read-only `--payment-id` capture lookup, `merchant_id`
+  redaction and a reconciliation record. No ledger posting (P1 not built). PayPal
+  payment gate met; P0 remains partial only for the GitHub CI run.
+  **Next task:** owner decides F1 (CAD settlement) and approves a GitHub remote; run CI
+  and hold the P0 review before any P1 work.
