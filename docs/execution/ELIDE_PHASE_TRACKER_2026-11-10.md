@@ -105,7 +105,7 @@ Playwright/E2E (not set up).
 ## Session log
 - 2026-11-10 (Claude Code, Opus 5.5): P0 bootstrap. Scaffolded repo, backend, frontend,
   DB, PayPal adapter + check script, and agent instructions. All local checks green
-  (see table). Bootstrap commit: see `git log` (first commit on `main`, "P0: bootstrap
-  repository"). Stopped at the P0 gate, blocked on owner PayPal Sandbox credentials.
+  (see table). Bootstrap commit: `16c7276` ("P0: bootstrap repository", local only,
+  not pushed). Stopped at the P0 gate, blocked on owner PayPal Sandbox credentials.
   **Next task:** once `.env` has Sandbox credentials, run `scripts/paypal_sandbox_check.py`
   steps 1→5, record results here, then have the owner pay the hosted invoice.
