@@ -128,8 +128,11 @@ class PayPalSandboxClient:
         params: dict[str, Any] | None = None,
         request_id: str | None = None,
         prefer_representation: bool = False,
+        content_type_json: bool = False,
     ) -> ProviderResponse:
         headers = self._auth_headers()
+        if content_type_json:
+            headers["Content-Type"] = "application/json"
         if request_id:
             headers["PayPal-Request-Id"] = request_id
         if prefer_representation:
@@ -157,8 +160,13 @@ class PayPalSandboxClient:
         )
 
     def generate_invoice_number(self) -> ProviderResponse:
+        # Body-less POST. Without an explicit JSON content type Sandbox answered
+        # HTTP 415 UNSUPPORTED_MEDIA_TYPE (debug id f81253945e66d, 2026-11-10).
         return self._call(
-            "generate_invoice_number", "POST", "/v2/invoicing/generate-next-invoice-number"
+            "generate_invoice_number",
+            "POST",
+            "/v2/invoicing/generate-next-invoice-number",
+            content_type_json=True,
         )
 
     def create_draft_invoice(self, payload: dict[str, Any], request_id: str) -> ProviderResponse:

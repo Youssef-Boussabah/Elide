@@ -1,0 +1,151 @@
+{
+  "run_id": "20261110T214721Z",
+  "environment": "sandbox",
+  "commit_sha": "64af80c252e499a8ef2b75d046a93ff49b4fa143+dirty",
+  "evidence_class": "sandbox-observation",
+  "records": [
+    {
+      "step": "auth",
+      "verdict": "OK",
+      "notes": "invoicing scope present=True",
+      "operation": "oauth_token",
+      "method": "POST",
+      "endpoint": "/v1/oauth2/token",
+      "http_status": 200,
+      "paypal_debug_id": "f7675556a79e4",
+      "paypal_request_id": null,
+      "elapsed_ms": 313,
+      "response_redacted": {
+        "token_type": "Bearer",
+        "expires_in": 32248,
+        "app_id_present": true,
+        "scopes": [
+          "https://api.paypal.com/v1/payments/.*",
+          "https://api.paypal.com/v1/vault/credit-card",
+          "https://api.paypal.com/v1/vault/credit-card/.*",
+          "https://uri.paypal.com/payments/payouts",
+          "https://uri.paypal.com/services/applications/webhooks",
+          "https://uri.paypal.com/services/billing-agreements",
+          "https://uri.paypal.com/services/checkout/one-click-with-merchant-issued-token",
+          "https://uri.paypal.com/services/checkout/payment-resources",
+          "https://uri.paypal.com/services/credit/client-offer-presentment/read",
+          "https://uri.paypal.com/services/disputes/create",
+          "https://uri.paypal.com/services/disputes/read-buyer",
+          "https://uri.paypal.com/services/disputes/read-seller",
+          "https://uri.paypal.com/services/disputes/update-seller",
+          "https://uri.paypal.com/services/documents/disputes/download",
+          "https://uri.paypal.com/services/invoicing",
+          "https://uri.paypal.com/services/payments/client-payments-eligibility",
+          "https://uri.paypal.com/services/payments/futurepayments",
+          "https://uri.paypal.com/services/payments/orders/client_sdk_orders_api",
+          "https://uri.paypal.com/services/payments/payment/authcapture",
+          "https://uri.paypal.com/services/payments/realtimepayment",
+          "https://uri.paypal.com/services/payments/refund",
+          "https://uri.paypal.com/services/pricing/exchange-currency/read",
+          "https://uri.paypal.com/services/pricing/quote-exchange-rates/read",
+          "https://uri.paypal.com/services/shipping/trackers/readwrite",
+          "https://uri.paypal.com/services/subscriptions/confirm-payment",
+          "openid"
+        ]
+      }
+    },
+    {
+      "step": "access",
+      "verdict": "OK",
+      "notes": "total_items=1",
+      "operation": "list_invoices",
+      "method": "GET",
+      "endpoint": "/v2/invoicing/invoices",
+      "http_status": 200,
+      "paypal_debug_id": "f7625705a7ee8",
+      "paypal_request_id": null,
+      "elapsed_ms": 250,
+      "response_redacted": {
+        "total_pages": 1,
+        "total_items": 1,
+        "items": [
+          {
+            "id": "INV2-4RUV-XPEH-4F3C-T8BW",
+            "status": "DRAFT",
+            "detail": {
+              "currency_code": "USD",
+              "note": "Synthetic Elide Sandbox feasibility test. Not a real obligation.",
+              "invoice_number": "0001",
+              "invoice_date": "2026-11-10",
+              "viewed_by_recipient": false,
+              "group_draft": false,
+              "metadata": {
+                "create_time": "2026-11-10T21:45:18Z"
+              }
+            },
+            "primary_recipients": [
+              {
+                "billing_info": {
+                  "email_address": "redacted:94281907e2c4"
+                }
+              }
+            ],
+            "amount": {
+              "currency_code": "USD",
+              "value": "990.00"
+            },
+            "due_amount": {
+              "currency_code": "USD",
+              "value": "990.00"
+            },
+            "links": [
+              {
+                "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW",
+                "rel": "self",
+                "method": "GET"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW/send",
+                "rel": "send",
+                "method": "POST"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW",
+                "rel": "replace",
+                "method": "PUT"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW",
+                "rel": "delete",
+                "method": "DELETE"
+              },
+              {
+                "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices/INV2-4RUV-XPEH-4F3C-T8BW/payments",
+                "rel": "record-payment",
+                "method": "POST"
+              }
+            ],
+            "unilateral": false
+          }
+        ],
+        "links": [
+          {
+            "href": "https://api.sandbox.paypal.com/v2/invoicing/invoices?page=1&page_size=1&total_required=true",
+            "rel": "self",
+            "method": "GET"
+          }
+        ]
+      }
+    },
+    {
+      "step": "number",
+      "verdict": "OK",
+      "notes": "invoice_number=0002",
+      "operation": "generate_invoice_number",
+      "method": "POST",
+      "endpoint": "/v2/invoicing/generate-next-invoice-number",
+      "http_status": 200,
+      "paypal_debug_id": "f762570cc3b85",
+      "paypal_request_id": null,
+      "elapsed_ms": 625,
+      "response_redacted": {
+        "invoice_number": "0002"
+      }
+    }
+  ]
+}

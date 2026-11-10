@@ -78,6 +78,21 @@ def test_403_returned_as_evidence_not_raised():
     assert not r.ok
 
 
+def test_generate_number_sends_json_content_type():
+    # Regression: Sandbox returned 415 for this body-less POST without a content type.
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/oauth2/token":
+            return _token_response()
+        seen["ct"] = request.headers.get("Content-Type")
+        return httpx.Response(200, json={"invoice_number": "0002"})
+
+    client = PayPalSandboxClient(_settings(), transport=httpx.MockTransport(handler))
+    assert client.generate_invoice_number().body == {"invoice_number": "0002"}
+    assert seen["ct"] == "application/json"
+
+
 def test_create_sends_idempotency_key():
     seen = {}
 

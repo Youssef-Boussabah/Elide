@@ -1,0 +1,74 @@
+{
+  "run_id": "20261110T214449Z",
+  "environment": "sandbox",
+  "commit_sha": "64af80c252e499a8ef2b75d046a93ff49b4fa143+dirty",
+  "evidence_class": "sandbox-observation",
+  "records": [
+    {
+      "step": "auth",
+      "verdict": "OK",
+      "notes": "invoicing scope present=True",
+      "operation": "oauth_token",
+      "method": "POST",
+      "endpoint": "/v1/oauth2/token",
+      "http_status": 200,
+      "paypal_debug_id": "f62629410eab7",
+      "paypal_request_id": null,
+      "elapsed_ms": 375,
+      "response_redacted": {
+        "token_type": "Bearer",
+        "expires_in": 32400,
+        "app_id_present": true,
+        "scopes": [
+          "https://api.paypal.com/v1/payments/.*",
+          "https://api.paypal.com/v1/vault/credit-card",
+          "https://api.paypal.com/v1/vault/credit-card/.*",
+          "https://uri.paypal.com/payments/payouts",
+          "https://uri.paypal.com/services/applications/webhooks",
+          "https://uri.paypal.com/services/billing-agreements",
+          "https://uri.paypal.com/services/checkout/one-click-with-merchant-issued-token",
+          "https://uri.paypal.com/services/checkout/payment-resources",
+          "https://uri.paypal.com/services/credit/client-offer-presentment/read",
+          "https://uri.paypal.com/services/disputes/create",
+          "https://uri.paypal.com/services/disputes/read-buyer",
+          "https://uri.paypal.com/services/disputes/read-seller",
+          "https://uri.paypal.com/services/disputes/update-seller",
+          "https://uri.paypal.com/services/documents/disputes/download",
+          "https://uri.paypal.com/services/invoicing",
+          "https://uri.paypal.com/services/payments/client-payments-eligibility",
+          "https://uri.paypal.com/services/payments/futurepayments",
+          "https://uri.paypal.com/services/payments/orders/client_sdk_orders_api",
+          "https://uri.paypal.com/services/payments/payment/authcapture",
+          "https://uri.paypal.com/services/payments/realtimepayment",
+          "https://uri.paypal.com/services/payments/refund",
+          "https://uri.paypal.com/services/pricing/exchange-currency/read",
+          "https://uri.paypal.com/services/pricing/quote-exchange-rates/read",
+          "https://uri.paypal.com/services/shipping/trackers/readwrite",
+          "https://uri.paypal.com/services/subscriptions/confirm-payment",
+          "openid"
+        ]
+      }
+    },
+    {
+      "step": "access",
+      "verdict": "OK",
+      "notes": "total_items=0",
+      "operation": "list_invoices",
+      "method": "GET",
+      "endpoint": "/v2/invoicing/invoices",
+      "http_status": 200,
+      "paypal_debug_id": "f626294a2fc40",
+      "paypal_request_id": null,
+      "elapsed_ms": 735,
+      "response_redacted": {
+        "total_pages": 0,
+        "total_items": 0
+      }
+    },
+    {
+      "step": "draft",
+      "verdict": "SKIPPED",
+      "notes": "re-run with --create-draft to test draft creation"
+    }
+  ]
+}

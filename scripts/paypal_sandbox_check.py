@@ -14,7 +14,8 @@ Usage (PowerShell, from repo root):
   uv run python scripts/paypal_sandbox_check.py
   uv run python scripts/paypal_sandbox_check.py --create-draft
   uv run python scripts/paypal_sandbox_check.py --create-draft --send
-  uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-XXXX-XXXX-XXXX-XXXX
+  uv run python scripts/paypal_sandbox_check.py --invoice-id INV2-XXXX --expected-cents 99000
+  uv run python scripts/paypal_sandbox_check.py --check-number   (numbering only)
 
 The payment itself is performed by a human in the PayPal-hosted payer page, logged in
 as the Sandbox *personal* account. This script only observes the result afterwards.
@@ -40,7 +41,7 @@ from api.integrations.paypal.client import (  # noqa: E402
     build_draft_invoice,
     new_request_id,
 )
-from api.integrations.paypal.money import AmountError, paypal_to_cents  # noqa: E402
+from api.integrations.paypal.invoice_terms import compare_terms, invoice_terms  # noqa: E402
 from api.integrations.paypal.redaction import redact  # noqa: E402
 
 EVIDENCE_DIR = ROOT / "evidence" / "paypal-sandbox" / "runs"
@@ -108,32 +109,49 @@ class Recorder:
 
 
 def _fetch_and_compare(
-    client: PayPalSandboxClient, rec: Recorder, invoice_id: str, expected_cents: int | None
+    client: PayPalSandboxClient,
+    rec: Recorder,
+    invoice_id: str,
+    expected_cents: int | None,
+    *,
+    face_cents: int | None = None,
+    discount_cents: int | None = None,
+    expected_status: str | None = None,
 ) -> None:
+    """Independent GET of the provider resource; compare what PayPal stored to our request."""
     r = client.get_invoice(invoice_id)
     if not r.ok:
         rec.add("fetch", r, "FAIL", "could not retrieve invoice")
         return
-    body = r.body
-    status = body.get("status")
-    notes = [f"status={status}"]
+    t = invoice_terms(r.body)
+    notes = [
+        f"status={t.status}",
+        f"currency={t.currency}",
+        f"provider_total_cents={t.total_cents}",
+        f"provider_item_total_cents={t.item_total_cents}",
+        f"provider_invoice_discount_cents={t.invoice_discount_cents}"
+        f" (sign={t.invoice_discount_sign})",
+        f"provider_due_cents={t.due_cents}",
+        f"provider_tax_cents={t.tax_total_cents}",
+        f"payment_term={t.payment_term_type}",
+    ]
     verdict = "OK"
-    try:
-        total = paypal_to_cents(body["amount"])
-        notes.append(f"provider_total_cents={total}")
-        if expected_cents is not None and total != expected_cents:
-            verdict = "MISMATCH"
-            notes.append(f"expected_cents={expected_cents}")
-    except (KeyError, AmountError) as exc:
-        verdict = "FAIL"
-        notes.append(f"amount unreadable: {exc}")
-    paid = body.get("payments", {}).get("paid_amount")
-    if paid:
-        try:
-            notes.append(f"provider_paid_cents={paypal_to_cents(paid)}")
-        except AmountError as exc:
-            notes.append(f"paid amount unreadable: {exc}")
-    if status == "PAID":
+    if face_cents is not None and discount_cents is not None:
+        mismatches = compare_terms(
+            t, face_cents=face_cents, discount_cents=discount_cents, expected_status=expected_status
+        )
+    else:
+        mismatches = list(t.problems)
+        if expected_cents is not None and t.total_cents != expected_cents:
+            mismatches.append(f"total_cents: provider={t.total_cents} expected={expected_cents}")
+    if mismatches:
+        verdict = "MISMATCH"
+        notes.append("mismatches=[" + " | ".join(mismatches) + "]")
+    else:
+        notes.append("all requested terms match provider record")
+    if t.paid_cents is not None:
+        notes.append(f"provider_paid_cents={t.paid_cents}")
+    if t.status == "PAID":
         notes.append("provider-confirmed PAID; NOT evidence funds are spendable (D006)")
     rec.add("fetch", r, verdict, "; ".join(notes))
 
@@ -145,6 +163,12 @@ def main() -> int:
         "--send", action="store_true", help="send the created draft (needs --create-draft)"
     )
     ap.add_argument("--invoice-id", help="only fetch/compare an existing invoice")
+    ap.add_argument("--expected-status", help="with --invoice-id, e.g. DRAFT, UNPAID, PAID")
+    ap.add_argument(
+        "--check-number",
+        action="store_true",
+        help="only call generate-next-invoice-number (creates no invoice)",
+    )
     ap.add_argument("--expected-cents", type=int, help="expected provider total for --invoice-id")
     ap.add_argument("--face-cents", type=int, default=100000, help="default $1,000.00 (synthetic)")
     ap.add_argument("--discount-cents", type=int, default=1000, help="default $10.00")
@@ -181,8 +205,31 @@ def main() -> int:
             return 1
 
         if args.invoice_id:
-            _fetch_and_compare(client, rec, args.invoice_id, args.expected_cents)
+            if (
+                args.expected_cents is not None
+                and args.expected_cents != args.face_cents - args.discount_cents
+            ):
+                ap.error("--expected-cents must equal --face-cents minus --discount-cents")
+            _fetch_and_compare(
+                client,
+                rec,
+                args.invoice_id,
+                args.expected_cents,
+                face_cents=args.face_cents,
+                discount_cents=args.discount_cents,
+                expected_status=args.expected_status,
+            )
             return 0
+
+        if args.check_number:
+            r = client.generate_invoice_number()
+            rec.add(
+                "number",
+                r,
+                "OK" if r.ok else "FAIL",
+                f"invoice_number={r.body.get('invoice_number') if r.ok else None}",
+            )
+            return 0 if r.ok else 1
 
         if not args.create_draft:
             rec.note("draft", "SKIPPED", "re-run with --create-draft to test draft creation")
@@ -216,7 +263,15 @@ def main() -> int:
             return 1
         invoice_id = r.body.get("id")
         rec.add("draft", r, "OK", f"invoice_id={invoice_id} status={r.body.get('status')}")
-        _fetch_and_compare(client, rec, invoice_id, expected)
+        _fetch_and_compare(
+            client,
+            rec,
+            invoice_id,
+            expected,
+            face_cents=args.face_cents,
+            discount_cents=args.discount_cents,
+            expected_status="DRAFT",
+        )
 
         if not args.send:
             rec.note(
@@ -232,7 +287,15 @@ def main() -> int:
             "OK" if r.ok and payer_view else ("FAIL" if not r.ok else "WARN"),
             f"payer_view_link_returned={bool(payer_view)}",
         )
-        _fetch_and_compare(client, rec, invoice_id, expected)
+        _fetch_and_compare(
+            client,
+            rec,
+            invoice_id,
+            expected,
+            face_cents=args.face_cents,
+            discount_cents=args.discount_cents,
+            expected_status=None,  # post-send status is recorded, not assumed
+        )
         if payer_view:
             # Printed to your local terminal only; redacted in saved evidence.
             print(
