@@ -1,10 +1,10 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-10, 22:45 UTC):** P0 **complete, pending owner review**. All eight P0 gate items have evidence (see *P0 exit review*). Public repo https://github.com/Youssef-Boussabah/Elide, CI green. PayPal Sandbox invoice `INV2-4RUV-XPEH-4F3C-T8BW` is **PAID** (US$990.00, one transaction, remaining 0), provider-verified; the Canadian Sandbox merchant was credited CAD (decision F1, ADR-0007). No P1 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **implemented on branch `feat/p1-financial-kernel`, pending owner architectural review**; all P1 tests pass locally and in CI (see *P1 detail*). Not merged to `main`. No P2 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
-| P0 | API access + hosted Sandbox invoice payment route proven | **Complete, pending owner review**: payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
-| P1 | Money model, reserves, fees, revisions and fixtures pass | Not started | pytest / property test output |
+| P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
+| P1 | Money model, reserves, fees, revisions and fixtures pass | **Implemented, pending review** on `feat/p1-financial-kernel`: 259 tests pass (0 skipped), incl. 12 Hypothesis properties and 26 PostgreSQL integration tests | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | Not started | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
@@ -177,7 +177,7 @@ secret).
 `uvicorn` → `GET /health` 200, `GET /health/ready` 200 (`database: ok`, PostgreSQL 16.15),
 `pnpm install --frozen-lockfile` ✓, `typecheck` / `lint` ✓, Vitest 3 passed, `build` ✓,
 `pnpm dev` → `GET localhost:5173/` 200 with `#root`, proxy `GET /api/health/ready` 200.
-Caveat: the clone used the already-running `elide-db` container on 5433 instead of its own
+Caveat (resolved in P1: `container_name` removed from `compose.yaml`): the clone used the already-running `elide-db` container on 5433 instead of its own
 `docker compose up`, because `compose.yaml` fixes `container_name: elide-db` and two
 checkouts on one machine would clash. A fresh machine would run `docker compose up -d --wait
 db` as documented (not separately re-tested here).
@@ -257,6 +257,94 @@ tests first:
   Until resolved, record both raw values and do not use either for ordering-critical logic
   without noting the source.
 
+## P1 detail (2026-11-10/11, branch `feat/p1-financial-kernel`)
+
+Base: `main` = `21047fecb9f27278891e5dd1831537274ab00e01` (owner-reviewed P0). Design choices:
+ADR-0007 (currency), ADR-0008 (kernel). Evidence classes: **Synthetic-tested** for fixtures
+and logic; the settlement record and its postings are built from **Sandbox-verified**
+evidence (runs `20261110T221823Z`, `20261110T221827Z`). No PayPal call was made in P1.
+
+### Implemented
+| Area | Module | What it enforces |
+|---|---|---|
+| Money | `api/domain/money.py` | `Money` = nonnegative int cents + currency; `SignedAmount` = nonzero journal movement (distinct type); `ExchangeRate` = Decimal, half-up to the cent; USD-only `require_spendable`, CAD allowed as a fact; no floats, no cross-currency arithmetic |
+| Invoices | `api/domain/invoice.py` | Immutable `Obligation` identity and face; append-only numbered revisions (no backdating, conflicting revision → error); concession counts only when AUTHORIZED by debtor **and** creditor; drafts and expired drafts never count; cash applied, partials, reversals (exact, never beyond the payment, no reversal of a reversal); over-settlement refused; identical replays idempotent; `original_open = cash_applied + authorized_concession + remaining_open` checked on every position; duplicate original identity (`ObligationRegistry`, incl. provider reference) |
+| Capacity | `api/liquidity/capacity.py` | `deployable = max(0, raw)`, `deficit = max(0, −raw)`, `raw = spendable + verified incoming − reserve − committed`; validity window; STALE / NOT_YET_OBSERVED / UNVERIFIED / CURRENCY_BLOCKED deploy zero; held / pending / promised / provider-confirmed (`PAID`) add zero; verified receipt only strictly after it is available; no double counting of receipts or commitments; payment assessment with liquidity gap and explanation |
+| Settlement evidence | `api/domain/settlement.py`, `api/integrations/paypal/settlement.py`, `api/liquidity/provider_receipts.py` | Gross, fee, net, CAD credit and rate kept separately and cross-checked; exactly one cash receipt; CAD never USD capacity; disputed timestamp (INV-1) preserved, never used for ordering |
+| Simulation | `api/liquidity/simulation.py` | SYNTHETIC zero-lag sequential transfers; reserve after every leg incl. fees; conservation |
+| Journal | `api/accounting/journal.py`, `settlement_postings.py` | Per-currency balanced entries; evidence class; immutable provider refs; content digest; exact-negation reversals. Sandbox capture booked as one entry: USD clearing nets to 0, one CAD 1,306.79 balance, USD 29.01 fee expense, USD 10.00 discount |
+| Persistence | `api/accounting/store.py`, `api/liquidity/store.py`, migration `0002_financial_kernel` | Append-only tables (DB triggers), deferred per-currency balance check, idempotency-key + provider-event unique index, separate inbox dedup, reversal uniqueness, per-merchant advisory lock for capacity reservations, one transaction per operation |
+| Fixtures | `fixtures/canonical.py` (`canonical-v1`) | Scenarios A–D, synthetic; E in tests |
+
+**Not implemented (by design or later phase):** webhook worker / signature verification,
+obligation persistence tables, overpayment handling, partial-payment planning, FX handling
+of any kind, tenant/membership authorization (P4), planner/verifier (P2), AI (P3).
+Duplicate-posting protection exists for the journal; it has not been exercised by real
+webhooks (none are received yet).
+
+### Verification (2026-11-11, Windows 11, local PostgreSQL 16.15 at `127.0.0.1:5433`)
+| Check | Command | Result |
+|---|---|---|
+| Deps | `uv sync --locked` | pass (no new dependencies) |
+| Lint / format | `uv run ruff check .` / `uv run ruff format --check .` | pass / pass (95 files) |
+| Migrations | `alembic upgrade head` on dev DB → `0002_financial_kernel`; down to `0001` and up again on a throwaway DB (test) | pass |
+| Unit | `uv run pytest tests/unit` | **211 passed** |
+| Property | `uv run pytest tests/property` | **11 passed** (+1 Hypothesis property in `tests/unit/accounting`) |
+| Contract (PayPal adapter, mock transport, no network) | `uv run pytest tests/contract` | **11 passed** |
+| Integration (PostgreSQL, throwaway DB) | `uv run pytest tests/integration` | **26 passed, 0 skipped** |
+| Full backend | `uv run pytest` | **259 passed, 0 failed, 0 skipped**, 1 known warning |
+| Agent instructions consistency | `tests/unit/test_repository_hygiene.py` | 3 passed |
+| Frontend | `pnpm typecheck`, `lint`, `test`, `build` | pass, 3 passed, build ok |
+
+Ledger / idempotency evidence (integration tests):
+- real Sandbox settlement: 3 entries POSTED, replay → 3 DUPLICATE (same ids); trial balance 0
+  per currency; AR, USD clearing and USD cash all 0; CAD balance 130679; fee 2901;
+- same capture under another key or entity → refused; same key with changed content → conflict;
+- 8 concurrent identical posts → 1 POSTED + 7 DUPLICATE, 2 posting rows;
+- 6 concurrent posts of one provider event under different keys → 1 posted, 5 refused;
+- crash after the entry header → nothing persisted; clean retry posts once;
+- unbalanced entry / entry without postings inserted with raw SQL → refused at COMMIT;
+- UPDATE / DELETE / TRUNCATE on journal tables → refused;
+- reversal compensates (balances 0, both entries kept), second reversal refused, partial or
+  missing-target reversal refused;
+- inbox: duplicate webhook recorded once (also under 6 concurrent deliveries), changed payload
+  → conflict;
+- 6 concurrent plans reserving USD 990 from USD 990 deployable → exactly 1 succeeds; release
+  frees once; commitments cannot be deleted or edited; CAD evidence cannot be reserved.
+
+### Infrastructure changes
+- `compose.yaml`: fixed `container_name` removed. The running container was recreated by
+  `docker compose up -d --wait db` as `elide-db-1` on the **same volume** `elide_elide-pgdata`
+  (alembic version preserved). No volume was deleted.
+- Default DB host `127.0.0.1` (`.env.example`, `api/config.py`, tests). Measured on this
+  machine: `127.0.0.1` 0.01 s, `localhost` 4.1 s (tries `::1` first and times out), which
+  made Alembic hang without a timeout. `migrations/env.py` now sets `connect_timeout=5`.
+  **Owner action (optional):** the untracked local `.env` still has `localhost:5433`;
+  change it to `127.0.0.1:5433` to avoid a ~4 s delay per new connection.
+- Two leftover throwaway test databases from the hung runs were dropped (the dev `elide`
+  database was not touched except for the additive `0002` upgrade).
+
+### P1 acceptance (execution plan Phase 1)
+| Criterion | Status | Evidence |
+|---|---|---|
+| Independently checked invariants | met | settlement identity, capacity partition, conservation, per-currency balance: unit + Hypothesis + DB triggers |
+| Cash conservation in fee-free example | met | `test_a_fee_free_chain_conserves_cash_doc04_figures` + property test |
+| No reduction below reserve | met | simulation + capacity + reservation tests, adverse cases |
+| No unpaid invoice mislabeled paid | met | status derived from `remaining_open`; draft discount leaves $10 open; PAID ≠ spendable |
+| No hypothetical incoming balance treated as spendable | met | receipt-status tests, Scenario C, CAD settlement |
+| Held $990 receipt; $150 reserve shortfall $60; duplicate obligation | met | Scenarios C, D, E |
+| Ledger idempotency / concurrency / rollback | met | integration tests listed above |
+| CI green on the branch | see session log | GitHub Actions on `feat/p1-financial-kernel` |
+| Owner architectural review | **pending** | — |
+
+### Dependencies for P2
+Planner and replay verifier consume: `InvoiceRecord.position()` (open amounts, authorized
+concessions, due dates), `compute_capacity` / `assess_outflow` (deployable, deficit,
+explanations), `Commitment` + `reserve_capacity` (cash reservation per plan),
+`simulate` (reference replay for synthetic chains), `fixtures/canonical.py` (B0–B5
+scenarios), and the journal for realized outcomes. Open items P2 must decide: slot/lag
+model for verified availability, how plan reservations expire, fee model per leg.
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -319,3 +407,10 @@ tests first:
   0 skipped; frontend 3 passed, build ok). Clean clone from GitHub verified end to end.
   Fixed repo description typo. P0 marked complete pending owner review. No P1 work.
   **Next task:** owner reviews P0; then start P1 task 1 (money value types).
+- 2026-11-10/11 (Claude Code, Opus 5.5): P1 financial kernel on branch
+  `feat/p1-financial-kernel` (from `21047fe`). Money, invoices/revisions, capacity engine,
+  settlement evidence from real Sandbox runs, journal + inbox + capacity persistence,
+  migration 0002, canonical fixtures A–E. 259 tests pass locally (0 skipped). Fixed a
+  `localhost`→`::1` connection hang (127.0.0.1 defaults + Alembic timeout) and removed the
+  fixed compose container name (same volume reused). No PayPal calls. Not merged.
+  **Next task:** owner architectural review of P1; P2 only after approval.
