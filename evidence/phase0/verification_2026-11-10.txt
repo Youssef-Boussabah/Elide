@@ -1,0 +1,110 @@
+# Phase 0 verification run — 2026-11-10T20:11:36Z — Windows 11, Git Bash
+
+$ uv sync --locked
+Resolved 41 packages in 1ms
+Checked 39 packages in 5ms
+
+$ uv run ruff check .
+All checks passed!
+
+$ uv run ruff format --check .
+61 files already formatted
+
+$ docker compose ps
+elide-db postgres:16-alpine Up 9 minutes (healthy) 127.0.0.1:5433->5432/tcp
+
+$ uv run alembic current
+0001_baseline (head)
+
+$ uv run pytest -v
+tests/contract/test_paypal_client.py::test_refuses_without_credentials PASSED [  2%]
+tests/contract/test_paypal_client.py::test_refuses_non_sandbox_base_url PASSED [  4%]
+tests/contract/test_paypal_client.py::test_token_not_exposed_and_bearer_used PASSED [  7%]
+tests/contract/test_paypal_client.py::test_403_returned_as_evidence_not_raised PASSED [  9%]
+tests/contract/test_paypal_client.py::test_create_sends_idempotency_key PASSED [ 12%]
+tests/contract/test_paypal_client.py::test_draft_invoice_uses_exact_strings_and_discount PASSED [ 14%]
+tests/contract/test_paypal_client.py::test_redaction_removes_pii_and_payer_links PASSED [ 17%]
+tests/integration/test_database.py::test_postgres_16_reachable PASSED    [ 19%]
+tests/integration/test_database.py::test_readiness_endpoint_with_database PASSED [ 21%]
+tests/property/test_paypal_money_props.py::test_round_trip_is_exact PASSED [ 24%]
+tests/property/test_paypal_money_props.py::test_format_always_two_decimals PASSED [ 26%]
+tests/unit/test_config_and_ai.py::test_secrets_hidden_in_repr PASSED     [ 29%]
+tests/unit/test_config_and_ai.py::test_paypal_not_configured_by_default PASSED [ 31%]
+tests/unit/test_config_and_ai.py::test_unconfigured_llm_refuses_rather_than_fabricating PASSED [ 34%]
+tests/unit/test_config_and_ai.py::test_ai_package_never_imports_payment_code PASSED [ 36%]
+tests/unit/test_health.py::test_liveness_ok_without_database PASSED      [ 39%]
+tests/unit/test_health.py::test_readiness_reports_503_when_database_unreachable PASSED [ 41%]
+tests/unit/test_health.py::test_readiness_never_echoes_secret_values PASSED [ 43%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal[0-0.00] PASSED     [ 46%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal[5-0.05] PASSED     [ 48%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal[99000-990.00] PASSED [ 51%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal[100000-1000.00] PASSED [ 53%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal[123456789-1234567.89] PASSED [ 56%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal_rejects_non_int_or_negative[-1] PASSED [ 58%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal_rejects_non_int_or_negative[1.0] PASSED [ 60%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal_rejects_non_int_or_negative[True] PASSED [ 63%]
+tests/unit/test_paypal_money.py::test_cents_to_paypal_rejects_non_int_or_negative[100] PASSED [ 65%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_accepts_exact[990] PASSED [ 68%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_accepts_exact[990.0] PASSED [ 70%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_accepts_exact[990.00] PASSED [ 73%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_rejects_inexact[990.001] PASSED [ 75%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_rejects_inexact[-1.00] PASSED [ 78%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_rejects_inexact[1e3] PASSED [ 80%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_rejects_inexact[ 1.00] PASSED [ 82%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_rejects_inexact[01.00] PASSED [ 85%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_rejects_inexact[] PASSED [ 87%]
+tests/unit/test_paypal_money.py::test_paypal_to_cents_rejects_inexact[NaN] PASSED [ 90%]
+tests/unit/test_paypal_money.py::test_currency_mismatch_rejected PASSED  [ 92%]
+tests/unit/test_repository_hygiene.py::test_claude_and_agents_instructions_identical PASSED [ 95%]
+tests/unit/test_repository_hygiene.py::test_project_sources_match_manifest PASSED [ 97%]
+tests/unit/test_repository_hygiene.py::test_env_example_has_placeholders_only PASSED [100%]
+======================= 41 passed, 1 warning in 15.30s ========================
+
+$ (web) pnpm install --frozen-lockfile
+Already up to date
+Done in 363ms using pnpm v11.18.0
+
+$ (web) pnpm typecheck
+$ tsc -b --noEmit
+exit=0
+
+$ (web) pnpm lint
+$ eslint .
+exit=0
+
+$ (web) pnpm test
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+
+$ (web) pnpm build
+✓ built in 180ms
+
+$ git check-ignore -v (secret/config paths)
+.gitignore:2:.env	.env
+.gitignore:3:.env.*	.env.local
+.gitignore:50:evidence/**/raw/	evidence/paypal-sandbox/raw/x.json
+.gitignore:9:secrets/	secrets/a
+.gitignore:15:client_secret*	client_secret.json
+.gitignore:35:node_modules/	web/node_modules
+.gitignore:20:.venv/	.venv
+.gitignore:36:web/dist/	web/dist
+.gitignore:43:*.db	local.db
+
+$ git check-ignore (must NOT be ignored)
+tracked-ok: .env.example
+tracked-ok: evidence/paypal-sandbox/runs/x.json
+tracked-ok: README.md
+
+$ sha256 manifest check (docs/project-sources)
+18 of 18 files OK
+
+$ sha256 docs/execution vs Downloads originals
+identical: ELIDE_BUILD_EXECUTION_PLAN_2026-11-10.md 13b0020c35daedbb9e494bccc606044515617105800f277651ecedda186fa191
+(phase tracker original sha256: e37e42d61b884109614334d28d0621e086a6f40a4940101ae44f44d850ec6143 — repo copy is intentionally updated)
+
+# Re-run after placeholder-handling fix — 2026-11-10T20:16:25Z
+$ uv run pytest -q
+42 passed, 1 warning in 17.68s
+$ uv run ruff check . && uv run ruff format --check .
+All checks passed!
+62 files already formatted

@@ -1,0 +1,17 @@
+ELIDE — CHATGPT PROJECT INSTRUCTIONS
+
+This ChatGPT Project is dedicated to ELIDE, an AI-assisted business liquidity coordination and payment optimization system for the PayPal AI Hackathon.
+
+Read 00_START_HERE.md first. Treat the uploaded ELIDE_PROJECT_SOURCES Markdown files as the current design source of truth. Use 16_DECISIONS_STATUS_AND_OPEN_QUESTIONS.md to resolve conflicts. Consult 17_SOURCE_REGISTER.md when citing external evidence. Older chats and older design packages are historical context, not equally authoritative architecture.
+
+Maintain a strict separation among: (a) intended design, (b) synthetic simulation, (c) tested implementation, (d) real PayPal Sandbox evidence, and (e) real merchant field evidence. Never state a future, simulated or unverified capability as completed.
+
+The core product is permissioned, buyer-and-network-aware invoice timing/discount coordination: identify liquidity bottlenecks, propose mutually acceptable terms with AI, verify feasibility mathematically, collect independent merchant approvals, execute hosted PayPal payments and reconcile independently verified outcomes. Emphasize minimum required cash, reserves, due times, fees, incentives, consent, privacy and true incremental impact.
+
+Never allow an LLM to control payment execution, bypass merchant approvals, create funds, assume receipt availability, expose cross-merchant private data, or treat noncash netting as a PayPal payment. AI should interpret policies, draft bounded offers, and explain deterministic results. ML predictions are experimental until validated on appropriate real labeled data.
+
+Architecture: modular monolith with React/TypeScript frontend, FastAPI/Python backend, PostgreSQL, durable outbox/inbox reconciliation, independently tested optimization solver, and separate PayPal adapter. First release favors one real PayPal Sandbox payment over speculative features. No autonomous credit/lending, pooled wallet, blockchain or production netting in hackathon scope.
+
+When developing, write concrete code and tests consistent with the existing contracts. State assumptions, dependencies, security constraints and acceptance evidence. Prefer correct, feasible implementations to overpromising. Do not simplify Elide into a generic invoice reminder or chatbot. For every proposed improvement, explain effect on buyer/supplier incentives, finance correctness, PayPal feasibility and hackathon delivery.
+
+Official deadline: November 12, 2026 at 12 p.m. Pacific / 3 p.m. Toronto. Verify current official rules before making submission claims. No guaranteed winning odds.

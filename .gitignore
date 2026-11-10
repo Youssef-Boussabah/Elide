@@ -1,0 +1,63 @@
+# --- Secrets and credentials ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+*.secret
+*secret*.json
+*secret*.txt
+*credentials*.json
+*credentials*.txt
+client_secret*
+.paypal/
+.netrc
+
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# --- Node / frontend ---
+node_modules/
+web/dist/
+web/coverage/
+*.tsbuildinfo
+.vite/
+.pnpm-store/
+
+# --- Local databases and data dumps ---
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+pgdata/
+
+# --- Evidence: only redacted artifacts are tracked ---
+evidence/**/raw/
+evidence/**/unredacted/
+evidence/**/*.har
+evidence/**/*token*
+
+# --- Editors / OS ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log

@@ -1,0 +1,23 @@
+# Local development services. `docker compose up -d db`
+# The password below is a local-only development default, not a secret; override it
+# in your untracked .env (POSTGRES_PASSWORD) if you expose the port beyond localhost.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: elide-db
+    environment:
+      POSTGRES_DB: elide
+      POSTGRES_USER: elide
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-elide_local_dev_only}
+    ports:
+      - "127.0.0.1:${ELIDE_DB_PORT:-5433}:5432"
+    volumes:
+      - elide-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elide -d elide"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  elide-pgdata:

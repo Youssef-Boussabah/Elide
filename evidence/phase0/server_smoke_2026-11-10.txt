@@ -1,0 +1,17 @@
+# Phase 0 server smoke test — 2026-11-10 (~20:08 UTC), Windows 11, PowerShell 5.1
+# Servers started as background processes, probed with Invoke-WebRequest, then stopped.
+
+$ uv run uvicorn api.app.main:app --host 127.0.0.1 --port 8000
+$ (web) pnpm dev
+
+GET :8000/health       -> {"status":"ok","service":"elide-api","version":"0.0.1"}
+GET :8000/health/ready -> {"status":"ok","database":"ok","postgres_version":"16.15","paypal_sandbox_configured":false,"llm_configured":false}
+GET :5173/ -> HTTP 200, has #root: True
+GET :5173/api/health/ready (via Vite proxy) -> {"status":"ok","database":"ok","postgres_version":"16.15","paypal_sandbox_configured":false,"llm_configured":false}
+
+# After stopping: 8000 listening: False, 5173 listening: False
+
+$ uv run python scripts/paypal_sandbox_check.py      (no .env present at the time)
+BLOCKED: PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET are not set in the local .env.
+See README.md > 'PayPal Sandbox setup'. Nothing was called.
+exit code: 2
