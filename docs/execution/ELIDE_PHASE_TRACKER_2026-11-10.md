@@ -378,6 +378,7 @@ Verification after remediation (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.
 | `pytest tests/integration` | **39 passed, 0 skipped** |
 | `pytest` (full) | **329 passed, 0 failed, 0 skipped**, 1 known Starlette warning |
 | Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
+| GitHub Actions | [run #5](https://github.com/Youssef-Boussabah/Elide/actions/runs/42934762564) on `bf3ad8b`: success; migrations 0001→0002→0003 applied to the CI PostgreSQL service; backend **329 passed, 0 skipped** (1 known warning); frontend success |
 
 Remaining risks after remediation:
 - Incoming receipts are not persisted; callers supply them and the engine checks them.
@@ -479,4 +480,5 @@ and are released when a newer observation reflects the outflow, fee model per le
   All 7 owner findings reproduced on `91b8152`, regression tests written first (failed),
   then fixed; plus a concurrent-replay race found while fixing #6. Migration `0003`
   (dev DB upgraded, additive). 329 tests pass locally (0 skipped). No PayPal calls,
-  no credential changes. Not merged. **Next task:** owner re-review of P1.
+  no credential changes. CI run #5 on `bf3ad8b` green (329 passed, 0 skipped). Not merged.
+  **Next task:** owner re-review of P1.
