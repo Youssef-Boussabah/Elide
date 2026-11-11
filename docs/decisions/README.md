@@ -14,3 +14,4 @@ ADRs never override frozen decisions D001–D013. A conflict needs an explicit o
 | [ADR-0006](ADR-0006-mit-license.md) | MIT license | Accepted |
 | [ADR-0007](ADR-0007-usd-only-with-cad-sandbox-settlement.md) | USD-only optimizer with a CAD-settling Sandbox merchant | Accepted |
 | [ADR-0008](ADR-0008-financial-kernel-design.md) | Phase 1 financial kernel design choices | Accepted |
+| [ADR-0009](ADR-0009-p2-planner-design.md) | Phase 2 planner, verifier and baseline design | Proposed |

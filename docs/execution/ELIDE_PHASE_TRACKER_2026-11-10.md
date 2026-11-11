@@ -1,11 +1,11 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **complete**: owner-approved after review remediation for the synthetic simulation and deterministic financial-model scope (not production payment execution); merged to `main` at `41c0f9f` (CI run #7 green). P2 in progress on `feat/p2-liquidity-optimizer`. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **complete** (owner-approved for the synthetic simulation and deterministic financial-model scope; merged to `main` at `41c0f9f`, CI run #7 green). P2 **implemented on `feat/p2-liquidity-optimizer`, pending owner review** (see *P2 detail*); not merged; no P3 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
 | P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | **Complete** (owner-approved 2026-11-11; merged `41c0f9f`): 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests; CI run #7 on `main` green | pytest / property test output |
-| P2 | Exact optimizer agrees with separate verifier and fair baselines | In progress on `feat/p2-liquidity-optimizer` | B0–B5 test table + seed/trace |
+| P2 | Exact optimizer agrees with separate verifier and fair baselines | **Implemented, pending review** on `feat/p2-liquidity-optimizer`: 421 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
 | P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
@@ -417,6 +417,73 @@ scenarios), and the journal for realized outcomes. Since the review: `current_ev
 P2 must decide: slot/lag model for verified availability, how plan reservations expire
 and are released when a newer observation reflects the outflow, fee model per leg.
 
+## P2 detail (2026-11-11, branch `feat/p2-liquidity-optimizer`)
+
+Evidence class of every P2 number: **Synthetic-tested** (simulation), except two labelled
+Sandbox facts reused from P0: the CAD 1,306.79 settlement credit and the USD 29.01 fee (an
+example, not a fee model). No PayPal call, no invoice change, no merchant approval, no
+credential change. Design record: **ADR-0009**. No database migration (planner is pure).
+
+### Implemented (`api/planning/`)
+| Module | What it does |
+|---|---|
+| `network.py` | Directed multigraph: merchants, immutable obligation edges (parallel invoices kept, duplicate ids / provider refs rejected), candidate legs per terms (in force / open offer / negotiated proposal), slot clock, lag ≥ 1 (same-slot reuse unrepresentable), consent basis (synthetic assumption / recorded decision / refused), fee terms (payer debit, payee deduction, conditional ceiling, unknown), separate available / reserve / committed / inflow / held / pending / unverified / currency-blocked cash |
+| `builder.py` | Networks from P1 objects: `compute_capacity` positions (one receipt counts once, held = 0), the Sandbox settlement (CAD blocked, D006/D008), invoice revisions → legs; exclusions with reasons |
+| `solver.py` | Exact DP over time slots with memoised states; objectives NETWORK / FOCAL / MIN_LIQUIDITY; status OPTIMAL only for a complete search, FEASIBLE / UNKNOWN on the node limit, INFEASIBLE only after a complete search |
+| `verifier.py` | Separately coded replay: per-leg rules, reserve after every debit, availability, invoice identity, deadlines, terms, consent (no merchant signs for another), incentives, conservation, own-funds draw vs hypothetical funding |
+| `objective.py` | One lexicographic definition: (lead, on-time face, surplus, −early cash, −cash×time, −fees), then smallest schedule |
+| `baselines.py` | B0–B5 on the identical network; B3 exact expectation over tied buyer choices |
+| `plan.py` | Deterministic `elide.plan.v1` record (`status: SIMULATED`, `may_execute: false`), per-merchant views, `verify_plan_record`, `plan_commitments` |
+| `reference.py`, `generator.py` | Brute-force reference; seeded synthetic families (`p2-gen-1`) |
+
+Also: `fixtures/planning.py` (`canonical-p2-v1`, built from the P1 fixtures),
+`scripts/run_planner_benchmarks.py`, read-only `InvoiceRecord.open_offers(at)`,
+`ix_journal_posting_entry` declared in metadata (pre-existing `alembic check` drift from
+P1; no schema change) and `alembic check` added to CI.
+
+### Canonical results (exact solver, verified by the independent replay)
+| Scenario | Result |
+|---|---|
+| A: buyer $1,490 / reserve $500; two $1,000 invoices with $10-off offers; food → freight $900 → repair $800 | OPTIMAL: food offer @ slot 0, freight @ 28, repair @ 29 (latest slots that keep the mechanic on time). On-time face $2,700; gross flow $2,690; downstream face $1,700; closing cash 500 / 90 / 0 / 100 / 800 = $1,490 conserved. Buyer: $10 discount − $6.30 time cost (8%/yr hurdle, 29 days) = **+$3.70**; supplier −$10 concession |
+| A baselines | B0 $0 (cannot pay $1,000 at due) · B1 $2,700 (id order happens to pick food) · B2 $2,700 (deterministic tie-break) · **B3 $1,850** (expected over the 2 tied choices) · B4 $2,700 · B5 $2,700 (no negotiated change). **Honest increment: +$850 vs B3, $0 vs B1/B2** |
+| B: $5 offer, buyer needs ≥ $10 | B0–B4: nothing ($995 > $990 deployable and $5 < minimum). B5 with the $10 proposal assumed signed by both: $2,700 on time; increment over B4 +$2,700 from a **different feasible set** |
+| C: supplier $990 held, reserve $150 | INFEASIBLE for freight; held funds count for zero; minimum HYPOTHETICAL funding $1,050 |
+| D: supplier $990 available, reserve $150, freight $900 | INFEASIBLE: "needs USD 900.00 + USD 150.00 reserve, has USD 990.00 available at slot 0: short by USD 60.00"; existing $840 + hypothetical $60 |
+| D′ / F: USD 29.01 fee (hypothetical USD net $960.99, or deducted from the $990 payment) | short by **USD 89.01** |
+| Payer-side fee | buyer needs USD 1,019.01 + USD 500.00 reserve: short by USD 29.01 |
+| E: real Sandbox CAD 1,306.79 credit | cannot fund USD freight (currency-blocked, D008); hypothetical USD gap $900 |
+| Minimum liquidity | food → freight → repair needs **$990** of existing buyer cash; A→B→C→A $100 loop needs a $100 hypothetical seed (noncash set-off would need $0 but is out of scope, D011) |
+| Limits | 10 candidate legs / 5 slots solve OPTIMAL; with `max_nodes=50` the result is FEASIBLE or UNKNOWN, never OPTIMAL |
+
+### Seeded benchmark (`evidence/phase2/planner_benchmark_2026-11-11.{md,json}`, commit `78abccb`)
+320 synthetic networks (8 families × 40 seeds, ≤ 6 obligations, 4 slots), all B4 OPTIMAL.
+On-time face lift per network: B4 − B3: median $0, mean $41.54, 88% zero, 0% negative,
+12% positive; B4 − B1: 97% zero; B5 − B4: 98% zero. Buyer net benefit B4 − B2: 23% of
+networks negative (p5 −$19.92): the network plan can give the buyer less than its own best
+choice (never below its minimum); the buyer-best plan is reported next to it. Solver vs
+brute force: **640 / 640** identical value and schedule.
+
+### Verification (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.1:5433`)
+| Check | Result |
+|---|---|
+| `uv sync --locked` | pass (no new dependencies) |
+| `ruff check .` / `ruff format --check .` | pass / pass (122 files) |
+| `alembic current` / `heads` / `check` | `0003_review_remediation` (head) / single head / no drift (after the metadata fix) |
+| `pytest tests/unit/planning` | **86 passed** |
+| `pytest tests/property/test_planner_props.py` | **5 passed** (Hypothesis: solver = brute force, conservation and reserves, B4 ≥ B0–B3 and B5 ≥ B4, minimum liquidity = brute force and tight, truncated search never OPTIMAL) |
+| `pytest tests/integration` | **40 passed, 0 skipped** (incl. concurrent plan reservations) |
+| `pytest` (full) | **421 passed, 0 failed, 0 skipped**, 1 known Starlette warning |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
+
+### Remaining limitations / risks
+- Whole-invoice legs only: no partial payments or instalments.
+- Acceptance is per leg; no benefit sharing between merchants.
+- Inputs are deterministic: no risk-aware or probabilistic plans.
+- The exact search is exponential in the worst case. It is sized for demo networks of about 10 legs; at the limit the status degrades honestly.
+- Plans are not persisted, and there is no API endpoint or UI yet (P4). Approvals are synthetic assumptions. Tenant scoping of the network-level record is P4.
+- Plan commitments are not released automatically when a newer balance snapshot reflects the outflow; the release is manual through the P1 store.
+- Doc 12 lists more metrics (consent, completion and privacy-refusal rates). These need real or multi-session data and are not computed.
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -497,3 +564,8 @@ and are released when a newer observation reflects the outflow, fee model per le
 - 2026-11-11 (Claude Code, Opus 5.5): owner approved P1. Merged `feat/p1-financial-kernel`
   (`3af748d`) into `main` with `--no-ff` → `41c0f9f`; CI run #7 on `main` green. Feature
   branch kept. **Next task:** P2 on `feat/p2-liquidity-optimizer`.
+- 2026-11-11 (Claude Code, Opus 5.5): P2 implemented on `feat/p2-liquidity-optimizer`
+  (`cf593c7`, `78abccb`): network model, exact slot DP solver, independent verifier,
+  B0–B5, minimum liquidity, plan record, benchmark evidence, ADR-0009. 421 tests pass
+  locally (0 skipped). No PayPal calls, no credential changes, no migration. Not merged.
+  **Next task:** owner review of P2 (do not start P3).

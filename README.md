@@ -9,12 +9,12 @@ terms, verifies feasibility with deterministic code, and uses PayPal (Sandbox) t
 and reconcile payments that **each merchant approves independently**. AI interprets
 policies and drafts offers. It never authorizes or executes payments.
 
-> **Status: Phase 0 complete; Phase 1 financial kernel (money, invoices, capacity,
-> journal) implemented on a review branch; review findings remediated, re-review
-> pending.** One synthetic Sandbox
+> **Status: Phase 0 and Phase 1 (financial kernel) complete; Phase 2 planner (exact
+> synthetic planner, independent verifier, B0-B5 baselines) implemented on a review
+> branch, pending review.** One synthetic Sandbox
 > invoice was created, sent and paid by a Sandbox payer, and verified through the PayPal
-> API. Planning, approvals, webhooks and the product UI are not implemented
-> yet. See [`docs/execution/ELIDE_PHASE_TRACKER_2026-11-10.md`](docs/execution/ELIDE_PHASE_TRACKER_2026-11-10.md)
+> API. Plans are simulations only. Approvals, webhooks and the product UI are not
+> implemented yet. See [`docs/execution/ELIDE_PHASE_TRACKER_2026-11-10.md`](docs/execution/ELIDE_PHASE_TRACKER_2026-11-10.md)
 > for verified progress.
 
 ## Repository layout
