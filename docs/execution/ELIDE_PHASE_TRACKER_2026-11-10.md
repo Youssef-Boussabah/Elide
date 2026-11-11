@@ -1,11 +1,11 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **complete** (owner-approved for the synthetic simulation and deterministic financial-model scope; merged to `main` at `41c0f9f`, CI run #7 green). P2 **implemented on `feat/p2-liquidity-optimizer`, pending owner review** (see *P2 detail*); not merged; no P3 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **complete** (owner-approved for the synthetic simulation and deterministic financial-model scope; merged to `main` at `41c0f9f`, CI run #7 green). P2 **implemented and hardened on `feat/p2-liquidity-optimizer`, pending final approval** (see *P2 detail* and *P2 hardening*); not merged; no P3 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
 | P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | **Complete** (owner-approved 2026-11-11; merged `41c0f9f`): 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests; CI run #7 on `main` green | pytest / property test output |
-| P2 | Exact optimizer agrees with separate verifier and fair baselines | **Implemented, pending review** on `feat/p2-liquidity-optimizer`: 421 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
+| P2 | Exact optimizer agrees with separate verifier and fair baselines | **Implemented, pending final approval** on `feat/p2-liquidity-optimizer`: hardened after review; 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
 | P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
@@ -476,6 +476,36 @@ brute force: **640 / 640** identical value and schedule.
 | Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
 | GitHub Actions run #9 (id 42941572698) on `d93072e` | **success**: backend (ruff, `alembic upgrade head`, `alembic check`, pytest) and frontend jobs |
 
+### P2 hardening (2026-11-11, after the owner's final review)
+
+Commit `efff0f7` (code). Evidence: `evidence/phase2/hardening_reproduction_2026-11-11.txt` and
+`evidence/phase2/planner_benchmark_2026-11-11_hardening.{md,json}` (the original
+`planner_benchmark_2026-11-11.*` files are unchanged; the addendum reproduces their
+original-face results for **320 / 320** networks). ADR-0009 addendum, decisions 15–19.
+
+| # | Review item | Reproduced | Correction |
+|---|---|---|---|
+| 1 | Plan integrity | yes: 22 of 26 tampering cases escaped `verify_plan_record` (benefits, approvals, expiry, fees, baselines, increments, proceeds, slot starts, dependencies, status, flags, aggregates), with or without a recomputed plan id | plan id = content checksum (documented as not an authorization); every financial field re-derived from the network by the verifier; `solver.value` checked against the replay; deterministic rebuild compared key by key; 56 tamper tests pass |
+| 2 | Supplier economics | canonical supplier −$10.00 modeled while buyer +$3.70 | `min_receipt_net_benefit_cents` + `receipt_cost_cents` enforced by solver and verifier (`PAYEE_REJECTS`); `economics` block and `MODELED_NET_LOSS` warning; disclosed positive-sum example (buyer +$3.70, supplier +$3.73); canonical fixture unchanged |
+| 3 | Impact measurement | face metric counted a partly paid invoice's whole face | separate `discharged` metrics (cash vs new concession, prior cash excluded); test: $1,000 invoice with $400 applied → face $1,000, discharged $600, gross $590 |
+| 4 | Presentation | — | headline findings first; constructed timing case (B4 $2,900 vs B1 $2,000; B3 $2,057.45) labelled CONSTRUCTED, not representative |
+
+**Headline findings (synthetic benchmark, unchanged):** B4 beats earliest-due-first (B1) in
+only **3%** of generated networks and the random tie-break (B3) in **12%**; the negotiated
+change (B5) improves on B4 in **2%**; under B4 the buyer's modeled net benefit is below its
+own best plan (B2) in **23%**. Canonical scenario: buyer +$3.70, supplier −$10.00, **not a
+win-win**.
+
+Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.1:5433`):
+| Check | Result |
+|---|---|
+| `ruff check .` / `ruff format --check .` | pass / pass (126 files) |
+| `alembic check` | no drift (head `0003_review_remediation`; no migration added) |
+| `pytest tests/unit/planning` | **151 passed** (+56 integrity, +9 economics) |
+| `pytest tests/property` | **21 passed** (incl. new supplier-rules property: solver = brute force, payee threshold holds) |
+| `pytest` (full) | **487 passed, 0 failed, 0 skipped**, 1 known Starlette warning |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
+
 ### Remaining limitations / risks
 - Whole-invoice legs only: no partial payments or instalments.
 - Acceptance is per leg; no benefit sharing between merchants.
@@ -571,3 +601,9 @@ brute force: **640 / 640** identical value and schedule.
   locally (0 skipped). No PayPal calls, no credential changes, no migration. Not merged.
   **Next task:** owner review of P2 (do not start P3).
   CI run #9 on `d93072e` green (incl. the new `alembic check` step).
+- 2026-11-11 (Claude Code, Opus 5.5): P2 hardening after the owner's final review
+  (`efff0f7`): plan integrity (22/26 tamper cases reproduced, all fixed), supplier-side
+  acceptance + economics block, discharged-obligation metrics, constructed timing and
+  positive-sum examples (labelled), benchmark addendum reproducing 320/320. 487 tests
+  pass. No PayPal calls, no credential changes, no approvals created. Not merged.
+  **Next task:** owner final approval of P2 (do not start P3).

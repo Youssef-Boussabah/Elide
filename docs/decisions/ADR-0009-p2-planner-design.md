@@ -1,6 +1,6 @@
 # ADR-0009: Phase 2 planner, verifier and baseline design
 
-- **Date:** 2026-11-11 · **Status:** Proposed (pending owner review of P2; no frozen decision changed)
+- **Date:** 2026-11-11, amended 2026-11-11 (hardening) · **Status:** Proposed (pending owner review of P2; no frozen decision changed)
 - **Context:** Phase 2 implements the deterministic planner, a separately coded verifier
   and B0–B5 baselines (execution plan Phase 2; docs 04, 05, 06, 09, 12, 16). The source
   documents leave the time model, the exact objective, the baseline rules and the solver
@@ -143,3 +143,41 @@ PostgreSQL concurrency test. Existing P0/P1 tests unchanged.
 - Deterministic inputs; no risk-aware or probabilistic planning (doc 05 B6).
 - Exact search is exponential in the worst case; sized for demo networks (≤ ~10 legs).
 - Plans are not persisted and approvals are not recorded (P4); no endpoint yet.
+
+## Addendum (2026-11-11): hardening after the owner's P2 review
+
+15. **Plan integrity.** `plan_id` = `plan_` + the first 16 hex digits of SHA-256 over the
+    canonical JSON of every other field: a content checksum, stated in the record's
+    `integrity` block to be **not an authorization or signature**. `verify_plan_record`:
+    - re-derives every financial field from the immutable network with the independent verifier;
+    - checks `solver.value` against the replayed objective;
+    - rebuilds the record deterministically and compares every key.
+
+    Before this, 22 of 26 tampering cases escaped detection: plan id, merchant benefits, approvals, expiry, fees, baselines, increments, leg proceeds, slot starts, dependencies, leg status, flags and aggregates (`evidence/phase2/hardening_reproduction_2026-11-11.txt`). All are now detected, including after an attacker recomputes `plan_id`. `execution.may_execute` stays `false` for every P2 plan. Future execution must reload current state and validate real approvals.
+16. **Supplier-side acceptance.** `MerchantPolicy.min_receipt_net_benefit_cents` (None =
+    no declared threshold) and `receipt_cost_cents`. For a leg that changes the payee's
+    outcome (extra concession or early payment): stated early-receipt value − extra
+    concession − payee fee − declared cost ≥ threshold, enforced by both solver and
+    verifier (`PAYEE_REJECTS`), alongside the existing concession cap, fee ceiling and
+    prohibited counterparties. Defaults leave `canonical-p2-v1` and the 320-network
+    benchmark unchanged (reproduced 320/320). The declared cost also enters surplus and
+    the payee's net benefit.
+17. **Economics are reported, not asserted.** Plans carry `economics` (participants,
+    `modeled_losses`, a note that values are modeled from declared synthetic inputs) and a
+    `MODELED_NET_LOSS:<merchant>` warning. The canonical plan is **not** a win-win: buyer
+    +$3.70, food supplier −$10.00 (it signed the offer but declared no receipt value).
+    A separate `network_positive_sum` fixture, labelled `CONSTRUCTED_EXAMPLE` with its
+    assumptions disclosed, gives buyer +$3.70 and supplier +$3.73. Its stated assumptions: early cash is worth 20%/yr to the supplier, a $2.00 declared cost, a $10.00 concession cap and a $0.00 threshold.
+18. **Measurement.** The published metric stays: `on_time_face_cents` = original face of
+    invoices paid by their due slot (B0–B5 comparable). New, separate metrics:
+    - `discharged.open_discharged_cents`: outstanding value the legs discharge, split into cash and new concessions;
+    - `discharged.prior_cash_applied_excluded_cents`: cash applied before planning, which is never counted as new movement;
+    - `on_time_open_discharged_cents`, with matching baseline expectations and increments.
+
+    `gross_flow_cents` counts re-spent cash again; `incremental_*` is plan − baseline on the same network. For an invoice of $1,000 with $400 already applied and a $10 offer, the figures are: face on time $1,000, discharged $600 (cash $590 + $10 concession), gross flow $590.
+19. **Presentation.** Benchmark summaries open with the headline findings:
+    - B4 beats B1 in 3% of generated networks and B3 in 12%;
+    - B5 improves on B4 in 2%;
+    - under B4 the buyer's modeled net benefit is below B2 in 23%.
+
+    `network_timing_matters` is a constructed (non-representative) case where earliest-due-first pays the earlier-due invoice with the only cash and makes a downstream carrier late. B4 pays the other invoice first, and every invoice stays on time ($2,900 vs B1 $2,000; B2's tie-break happens to find the same; B3 $2,057.45).
