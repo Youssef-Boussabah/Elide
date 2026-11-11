@@ -1,11 +1,11 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **implemented on branch `feat/p1-financial-kernel`; owner review gave conditional approval with 7 findings, all remediated and pending owner re-review** (see *P1 review remediation*). Not merged to `main`. No P2 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **complete**: owner-approved after review remediation for the synthetic simulation and deterministic financial-model scope (not production payment execution); merged to `main` at `41c0f9f` (CI run #7 green). P2 in progress on `feat/p2-liquidity-optimizer`. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
 | P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
-| P1 | Money model, reserves, fees, revisions and fixtures pass | **Implemented; review findings remediated, pending re-review** on `feat/p1-financial-kernel`: 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests | pytest / property test output |
-| P2 | Exact optimizer agrees with separate verifier and fair baselines | Not started | B0–B5 test table + seed/trace |
+| P1 | Money model, reserves, fees, revisions and fixtures pass | **Complete** (owner-approved 2026-11-11; merged `41c0f9f`): 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests; CI run #7 on `main` green | pytest / property test output |
+| P2 | Exact optimizer agrees with separate verifier and fair baselines | In progress on `feat/p2-liquidity-optimizer` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
 | P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
@@ -335,7 +335,7 @@ Ledger / idempotency evidence (integration tests):
 | Held $990 receipt; $150 reserve shortfall $60; duplicate obligation | met | Scenarios C, D, E |
 | Ledger idempotency / concurrency / rollback | met | integration tests listed above |
 | CI green on the branch | met | [run #3](https://github.com/Youssef-Boussabah/Elide/actions/runs/42923590785) on `daabed964dcada9ee7e18c89212a6bf82a9e9e2a`: backend **259 passed, 0 skipped** (migration 0002 applied to the CI PostgreSQL service), frontend 3 passed + build |
-| Owner architectural review | **conditional approval**; findings 1–7 remediated, **re-review pending** | *P1 review remediation* below |
+| Owner architectural review | **approved** after remediation (2026-11-11), scope: synthetic simulation and deterministic financial model; not production payment execution | *P1 review remediation* and *P1 approval and merge* below |
 
 ### P1 review remediation (2026-11-11)
 
@@ -392,6 +392,18 @@ Remaining risks after remediation:
   path creates `sandbox_verified` reversals yet.
 - Webhook worker, signature verification, tenant authorization: still P4/P5. INV-1
   timestamp cause still unknown. Starlette deprecation warning unchanged.
+
+### P1 approval and merge (2026-11-11)
+
+- Owner approval: P1 approved for the synthetic simulation and deterministic
+  financial-model scope. **Not** an authorization for production payment execution.
+- Pre-merge checks: `feat/p1-financial-kernel` = `3af748d60f0ae8b6daffdf66a15baec974b4bc1c`
+  (local and `origin`), working tree clean, CI run #6 on `3af748d` green.
+- Merge: `git merge --no-ff feat/p1-financial-kernel` into `main` →
+  **`41c0f9f0af5890a29fd41bcc63f75b469c177fbc`** (no rebase, no history rewrite; feature
+  branch kept; Sandbox evidence unchanged). Pushed `21047fe..41c0f9f`.
+- CI on `main`: run #7 (id 42936778766) on `41c0f9f`: **success** (same suite as run #5:
+  329 passed, 0 skipped; migrations through `0003`).
 
 ### Dependencies for P2
 Planner and replay verifier consume: `InvoiceRecord.position()` (open amounts, authorized
@@ -482,3 +494,6 @@ and are released when a newer observation reflects the outflow, fee model per le
   (dev DB upgraded, additive). 329 tests pass locally (0 skipped). No PayPal calls,
   no credential changes. CI run #5 on `bf3ad8b` green (329 passed, 0 skipped). Not merged.
   **Next task:** owner re-review of P1.
+- 2026-11-11 (Claude Code, Opus 5.5): owner approved P1. Merged `feat/p1-financial-kernel`
+  (`3af748d`) into `main` with `--no-ff` → `41c0f9f`; CI run #7 on `main` green. Feature
+  branch kept. **Next task:** P2 on `feat/p2-liquidity-optimizer`.
