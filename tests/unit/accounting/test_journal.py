@@ -90,16 +90,28 @@ def test_evidence_class_rules():
 
 def test_reversal_is_exact_negation_and_cannot_predate_or_chain():
     e = entry([p("cash:a", 100), p("equity:a", -100)])
-    r = e.reversal("syn:test:1:rev", T0 + timedelta(hours=1), "refund")
+    r = e.reversal(
+        "syn:test:1:rev", T0 + timedelta(hours=1), "refund", evidence_class=EvidenceClass.SYNTHETIC
+    )
     assert [(x.account, x.amount.cents) for x in r.postings] == [
         ("cash:a", -100),
         ("equity:a", 100),
     ]
     assert r.reverses_key == e.idempotency_key and r.kind is EntryKind.REVERSAL
     with pytest.raises(JournalError):
-        e.reversal("syn:test:1:rev2", T0 - timedelta(seconds=1), "backdated")
+        e.reversal(
+            "syn:test:1:rev2",
+            T0 - timedelta(seconds=1),
+            "backdated",
+            evidence_class=EvidenceClass.SYNTHETIC,
+        )
     with pytest.raises(JournalError):
-        r.reversal("syn:test:1:rev:rev", T0 + timedelta(hours=2), "chain")
+        r.reversal(
+            "syn:test:1:rev:rev",
+            T0 + timedelta(hours=2),
+            "chain",
+            evidence_class=EvidenceClass.SYNTHETIC,
+        )
 
 
 def test_digest_changes_with_content_not_with_timezone_spelling():

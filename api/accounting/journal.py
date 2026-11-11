@@ -5,6 +5,11 @@
   currency separately through an FX position account; no amount is invented.
 - Entries are immutable. A correction is a REVERSAL entry whose postings are the exact
   negation of the original, linked by `reverses_key`.
+- A reversal carries **its own** evidence class; it never inherits the original's. A
+  local correction is MANUAL_ADJUSTMENT (no provider resource). Only a reversal backed by
+  a provider reversal resource (a refund or dispute, never the original capture) may be
+  SANDBOX_VERIFIED. Synthetic and real books never reverse each other. The original
+  provider-verified entry stays on record unchanged.
 - Every entry carries an `idempotency_key` (one economic event = one entry) and an
   evidence class. Provider facts also carry an immutable `ProviderEventRef`.
 - `content_digest()` identifies the entry's content, so replaying the same key with the
@@ -42,6 +47,11 @@ class EvidenceClass(StrEnum):
     SANDBOX_VERIFIED = "sandbox_verified"  # from an independently fetched provider resource
     MERCHANT_ATTESTED = "merchant_attested"
     SYNTHETIC = "synthetic"  # simulated fixture data, never a real movement
+    MANUAL_ADJUSTMENT = "manual_adjustment"  # local correction; no external proof
+
+
+# Provider resources that can evidence a reversal of money (never a capture itself).
+REVERSAL_RESOURCE_TYPES = frozenset({"refund", "dispute"})
 
 
 class EntryKind(StrEnum):
@@ -118,6 +128,19 @@ class JournalEntry:
             raise JournalError("a Sandbox-verified entry must cite its provider resource")
         if self.evidence_class is EvidenceClass.SYNTHETIC and self.provider_ref is not None:
             raise JournalError("synthetic entries cannot cite a provider resource")
+        if self.evidence_class is EvidenceClass.MANUAL_ADJUSTMENT:
+            if self.kind is not EntryKind.REVERSAL:
+                raise JournalError("manual adjustments are only used for corrections")
+            if self.provider_ref is not None:
+                raise JournalError("a manual adjustment cannot cite a provider resource")
+        if self.kind is EntryKind.REVERSAL and self.provider_ref is not None:
+            if self.evidence_class is not EvidenceClass.SANDBOX_VERIFIED:
+                raise JournalError("only a provider-verified reversal cites a provider resource")
+            if self.provider_ref.resource_type not in REVERSAL_RESOURCE_TYPES:
+                raise JournalError(
+                    f"a {self.provider_ref.resource_type} is not evidence of a reversal; "
+                    f"cite one of {sorted(REVERSAL_RESOURCE_TYPES)}"
+                )
 
     def totals_by_currency(self) -> dict[str, int]:
         totals: dict[str, int] = defaultdict(int)
@@ -147,19 +170,54 @@ class JournalEntry:
         canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()
 
-    def reversal(self, idempotency_key: str, occurred_at: datetime, reason: str) -> JournalEntry:
+    def reversal(
+        self,
+        idempotency_key: str,
+        occurred_at: datetime,
+        reason: str,
+        *,
+        evidence_class: EvidenceClass,
+        provider_ref: ProviderEventRef | None = None,
+    ) -> JournalEntry:
+        """Exact compensating entry. The caller states what evidences the reversal itself:
+        MANUAL_ADJUSTMENT for a local correction, SANDBOX_VERIFIED only with the provider's
+        refund/dispute resource, SYNTHETIC only for synthetic books."""
         if self.kind is EntryKind.REVERSAL:
             raise JournalError("a reversal is not itself reversed; post a new entry instead")
         if occurred_at < self.occurred_at:
             raise JournalError("a reversal cannot predate the entry it reverses")
+        if not isinstance(reason, str) or not reason.strip():
+            raise JournalError("a reversal needs a reason")
+        check_reversal_evidence(
+            self.evidence_class, self.provider_ref, evidence_class, provider_ref
+        )
         return JournalEntry(
             entity_id=self.entity_id,
             idempotency_key=idempotency_key,
             kind=EntryKind.REVERSAL,
-            evidence_class=self.evidence_class,
-            description=f"Reversal of {self.idempotency_key}: {reason}",
+            evidence_class=evidence_class,
+            description=f"Reversal ({evidence_class.value}) of {self.idempotency_key}: {reason}",
             occurred_at=occurred_at,
             postings=tuple(Posting(p.account, -p.amount) for p in self.postings),
-            provider_ref=self.provider_ref,
+            provider_ref=provider_ref,
             reverses_key=self.idempotency_key,
         )
+
+
+def check_reversal_evidence(
+    original_class: EvidenceClass,
+    original_ref: ProviderEventRef | None,
+    reversal_class: EvidenceClass,
+    reversal_ref: ProviderEventRef | None,
+) -> None:
+    """Rules that need both the original and the reversal (also re-checked by the store)."""
+    if (original_class is EvidenceClass.SYNTHETIC) != (reversal_class is EvidenceClass.SYNTHETIC):
+        raise JournalError("synthetic and real entries cannot reverse each other")
+    if reversal_class is EvidenceClass.SANDBOX_VERIFIED:
+        if reversal_ref is None:
+            raise JournalError(
+                "a provider-verified reversal must cite the provider's refund or dispute; "
+                "a local correction is a MANUAL_ADJUSTMENT"
+            )
+        if reversal_ref == original_ref:
+            raise JournalError("the original payment is not evidence of its own reversal")

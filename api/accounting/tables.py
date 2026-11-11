@@ -45,7 +45,8 @@ journal_entry = Table(
     Column("reverses_entry_id", BigInteger, ForeignKey("journal_entry.id"), unique=True),
     Column("content_sha256", String(64), nullable=False),
     CheckConstraint(
-        "evidence_class IN ('sandbox_verified', 'merchant_attested', 'synthetic')",
+        "evidence_class IN ('sandbox_verified', 'merchant_attested', 'synthetic', "
+        "'manual_adjustment')",
         name="ck_journal_entry_evidence_class",
     ),
     CheckConstraint(
@@ -57,7 +58,8 @@ journal_entry = Table(
         name="ck_journal_entry_reversal_link",
     ),
 )
-# One economic posting per provider resource and entry kind, whatever key is used.
+# One economic posting per provider resource and entry kind, whatever key is used. Since
+# 0003 this includes reversals: one provider refund can back only one reversal.
 Index(
     "uq_journal_entry_provider_event",
     journal_entry.c.provider,
@@ -66,7 +68,7 @@ Index(
     journal_entry.c.provider_resource_id,
     journal_entry.c.kind,
     unique=True,
-    postgresql_where=text("provider IS NOT NULL AND kind <> 'reversal'"),
+    postgresql_where=text("provider IS NOT NULL"),
 )
 
 journal_posting = Table(

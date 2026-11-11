@@ -8,6 +8,7 @@ PostgreSQL is unreachable.
 
 import os
 import uuid
+from contextlib import contextmanager
 
 import pytest
 from alembic import command
@@ -42,8 +43,9 @@ def migrate(url: str, target: str = "head", direction: str = "up") -> None:
         get_settings.cache_clear()
 
 
-@pytest.fixture(scope="session")
-def kernel_db():
+@contextmanager
+def throwaway_database(pool_size: int = 12):
+    """Create a uniquely named database, migrate it to head, yield (engine, url), drop it."""
     server = _server_url()
     admin = create_engine(server, isolation_level="AUTOCOMMIT", connect_args={"connect_timeout": 3})
     try:
@@ -56,15 +58,28 @@ def kernel_db():
     with admin.connect() as c:
         c.execute(text(f'CREATE DATABASE "{name}"'))
     url = server.set(database=name).render_as_string(hide_password=False)
-    engine = create_engine(url, pool_size=12, max_overflow=4)
+    engine = create_engine(url, pool_size=pool_size, max_overflow=4)
     try:
         migrate(url)
-        yield engine
+        yield engine, url
     finally:
         engine.dispose()
         with admin.connect() as c:
             c.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
         admin.dispose()
+
+
+@pytest.fixture(scope="session")
+def kernel_db():
+    with throwaway_database() as (engine, _url):
+        yield engine
+
+
+@pytest.fixture
+def fresh_db():
+    """A database of its own for tests that need a clean journal (yields engine, url)."""
+    with throwaway_database(pool_size=6) as pair:
+        yield pair
 
 
 @pytest.fixture

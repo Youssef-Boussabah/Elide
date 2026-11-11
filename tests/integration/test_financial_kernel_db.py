@@ -41,6 +41,7 @@ pytestmark = pytest.mark.integration
 
 RUNS = Path(__file__).resolve().parents[2] / "evidence" / "paypal-sandbox" / "runs"
 T0 = datetime(2026, 11, 10, 15, 0, tzinfo=UTC)
+SYN = EvidenceClass.SYNTHETIC
 
 
 def settlement():
@@ -330,7 +331,9 @@ def test_reversal_compensates_without_rewriting_history(kernel_db, uid):
     entity = f"rev_entity_{uid}"
     original = synthetic_entry(f"syn:{uid}:paid", 99000, entity)
     store.post_entry(kernel_db, original)
-    rev = original.reversal(f"syn:{uid}:paid:reversal", T0 + timedelta(hours=1), "refund")
+    rev = original.reversal(
+        f"syn:{uid}:paid:reversal", T0 + timedelta(hours=1), "refund", evidence_class=SYN
+    )
     assert store.post_entry(kernel_db, rev).status is store.PostStatus.POSTED
     assert store.account_balances(kernel_db, entity) == {}
     assert store.entry_count(kernel_db, f"syn:{uid}:paid") == 2  # both still on record
@@ -338,7 +341,10 @@ def test_reversal_compensates_without_rewriting_history(kernel_db, uid):
     assert store.post_entry(kernel_db, rev).status is store.PostStatus.DUPLICATE
     with pytest.raises(store.ReversalError):
         store.post_entry(
-            kernel_db, original.reversal(f"syn:{uid}:paid:reversal2", T0 + timedelta(hours=2), "x")
+            kernel_db,
+            original.reversal(
+                f"syn:{uid}:paid:reversal2", T0 + timedelta(hours=2), "x", evidence_class=SYN
+            ),
         )
 
 
@@ -365,7 +371,7 @@ def test_reversal_must_exactly_negate_the_original(kernel_db, uid):
         store.post_entry(
             kernel_db,
             synthetic_entry(f"syn:{uid}:missing", 1, entity).reversal(
-                f"syn:{uid}:missing:rev", T0, "never posted"
+                f"syn:{uid}:missing:rev", T0, "never posted", evidence_class=SYN
             ),
         )
 
@@ -423,7 +429,8 @@ def _evidence(eid, merchant, spendable=149000, reserve=50000, cur=USD):
         EvidenceKind.MERCHANT_ATTESTED,
         T0,
         T0 + timedelta(hours=4),
-        Provenance(SourceKind.SYNTHETIC_FIXTURE, "integration-test", T0),
+        # Test values: a merchant attestation recorded by the test, not a real balance.
+        Provenance(SourceKind.MERCHANT_ATTESTED, "integration-test attestation", T0),
     )
 
 

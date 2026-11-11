@@ -1,9 +1,16 @@
 """Journal entries for one provider-verified invoice settlement (creditor's books).
 
-For the Phase 0 Sandbox payment this produces three entries, each with its own
-idempotency key and provider reference:
+**Illustrative bookkeeping, not an accounting-standards determination.** The entries model
+a receivable, sales revenue, an authorized discount and the provider settlement so that
+cash, fees and FX can be reconciled. Booking revenue when the invoice is issued is a
+modeling simplification: a PayPal invoice on its own does not establish when revenue must
+be recognized under the applicable accounting standards.
 
-1. invoice issued      Dr accounts_receivable 1,000.00 USD / Cr revenue
+For the Phase 0 Sandbox payment this produces three entries, each with its own
+idempotency key and provider reference. They are one accounting bundle and are imported
+together (`api.accounting.settlement_import`):
+
+1. invoice issued      Dr accounts_receivable 1,000.00 USD / Cr revenue (illustrative)
 2. discount authorized Dr contra_revenue (discount) 10.00 USD / Cr accounts_receivable
 3. capture settlement  (one entry, balanced per currency)
      USD: Dr paypal_settlement_clearing 990.00   Cr accounts_receivable 990.00
@@ -11,10 +18,14 @@ idempotency key and provider reference:
           Dr fx_conversion_position      960.99  Cr paypal_settlement_clearing 960.99
      CAD: Dr paypal_balance            1,306.79  Cr fx_conversion_position 1,306.79
 
-The USD clearing account nets to zero, so the only cash asset that remains is the CAD
-1,306.79 PayPal balance: one receipt, not two. `paypal_balance` is a provider-reported
-balance, not verified spendable capacity (D006); capacity is decided by the liquidity
-layer, and CAD can never be USD capacity (D008).
+What remains afterwards: the receivable and the USD clearing account are zero. Revenue,
+the discount, the fee expense and the FX conversion position legitimately keep balances.
+`fx_conversion_position` (USD +960.99 / CAD -1,306.79) records the conversion PayPal
+performed; it is **not** merchant cash. The USD-equivalent net proceeds (960.99) and the
+CAD credit (1,306.79) are two views of one receipt, not two cash receipts: the only cash
+asset is the CAD `paypal_balance`. That balance is provider-reported, not verified
+spendable capacity (D006); capacity is decided by the liquidity layer, and CAD can never be
+USD capacity (D008).
 """
 
 from __future__ import annotations
@@ -53,7 +64,10 @@ def settlement_entries(s: ProviderSettlement, entity_id: str) -> tuple[JournalEn
             idempotency_key=f"{inv_key}:issued",
             kind=EntryKind.INVOICE_ISSUED,
             evidence_class=EvidenceClass.SANDBOX_VERIFIED,
-            description=f"Invoice {s.invoice_id} issued for {s.invoice_face}",
+            description=(
+                f"Invoice {s.invoice_id} issued for {s.invoice_face} (illustrative receivable; "
+                "not a revenue-recognition determination)"
+            ),
             occurred_at=issued_at,
             postings=(_dr(ar, s.invoice_face), _cr("revenue:sales", s.invoice_face)),
             provider_ref=inv_ref,
