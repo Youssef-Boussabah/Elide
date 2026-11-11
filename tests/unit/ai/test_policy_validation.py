@@ -228,3 +228,19 @@ def test_counterparty_scope_is_the_merchants_own_network():
         context=other,
     )
     assert rep.status is Status.REJECTED
+
+
+def test_uncaptured_date_phrase_needs_clarification():
+    c = BY_ID["dat-01"]
+    rep = run(c, ext(reserve_floor=m("600", "Keep $600 for payroll through Friday.")))
+    assert rep.status is Status.NEEDS_CLARIFICATION
+    assert "UNCAPTURED_DATE" in [i.code for i in rep.issues]
+    assert run(BY_ID["ord-08"]).status is Status.READY_FOR_CONFIRMATION  # captured date is fine
+
+
+def test_unrequested_approval_preference_is_ignored_not_applied():
+    c = BY_ID["ord-01"]
+    rep = run(c, {**c["reference"], "approval_preference": "approve_each_payment"})
+    assert rep.status is Status.READY_FOR_CONFIRMATION
+    assert rep.proposed.approval_preference == "unspecified"
+    assert "UNGROUNDED_PREFERENCE_IGNORED" in [i.code for i in rep.issues]

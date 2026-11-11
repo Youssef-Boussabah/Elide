@@ -3,7 +3,7 @@ model call records the version and a hash of the exact context sent."""
 
 from __future__ import annotations
 
-POLICY_PROMPT_VERSION = "policy-extract-v1"
+POLICY_PROMPT_VERSION = "policy-extract-v2"
 COUNTEROFFER_PROMPT_VERSION = "counteroffer-v1"
 EXPLAIN_PROMPT_VERSION = "explain-v1"
 
@@ -22,8 +22,10 @@ Extract only these policy fields, and only when the text states them:
 - allowed_counterparties / prohibited_counterparties: businesses named as allowed or not
 - policy_valid_until: until when the policy applies; offer_response_deadline: by when
   offers must be decided
-- participation: "opt_in" / "opt_out" of coordinated early payments, else "unspecified"
-- approval_preference: "approve_each_payment" if they want to approve every payment
+- participation: "opt_in" / "opt_out" only if the text explicitly says to join or leave
+  coordinated early payments; otherwise "unspecified" (the default)
+- approval_preference: "approve_each_payment" only if the text explicitly asks to approve
+  every payment; otherwise "unspecified" (the default)
 
 Rules:
 1. Copy amounts exactly as written into `amount` (a string, e.g. "500" or "1,250.00") and

@@ -88,18 +88,13 @@ def plan_facts(record: dict[str, Any], viewer: str) -> list[tuple[str, str]]:
     return [(f"F{i}", f) for i, f in enumerate(facts, start=1)]
 
 
-def explain_plan(
-    adapter: LLMAdapter | None, net: Network, record: dict[str, Any], viewer: str
+def narrate(
+    adapter: LLMAdapter | None,
+    facts: list[tuple[str, str]],
+    viewer: str,
+    forbidden_names: tuple[str, ...],
 ) -> ExplanationResult:
-    problems = verify_plan_record(net, record)
-    if problems:
-        return ExplanationResult(
-            "STALE_OR_TAMPERED",
-            viewer,
-            problems=problems[:5],
-            text="This plan no longer matches the current data; recompute it.",
-        )
-    facts = plan_facts(record, viewer)
+    """Model-written text from verified facts, checked; the template is the fallback."""
     template = " ".join(f for _, f in facts)
     result = ExplanationResult("TEMPLATE", viewer, facts=facts, text=template)
     if adapter is None:
@@ -118,16 +113,11 @@ def explain_plan(
         result.issues.append(TextIssue("MODEL_FAILED", str(exc)))
         return result
     text = f"{out.value.headline}\n{out.value.explanation}"
-    fact_text = " ".join(f for _, f in facts)
-    view = merchant_view(record, viewer)
-    visible = {viewer} | {x for leg in view["my_legs"] for x in (leg["payer"], leg["payee"])}
-    everyone = {x for leg in record["selected_legs"] for x in (leg["payer"], leg["payee"])}
-    others = tuple(sorted((everyone | {record["focal_merchant"]}) - visible))
     issues = check_text(
         text,
-        allowed_amounts=all_numbers(fact_text),
+        allowed_amounts=all_numbers(template),
         private_amounts=set(),
-        forbidden_names=others,
+        forbidden_names=forbidden_names,
     )
     bad_cites = [c for c in out.value.cited_facts if c not in {k for k, _ in facts}]
     if bad_cites:
@@ -138,3 +128,21 @@ def explain_plan(
         return result  # deterministic template stays
     result.status, result.text, result.source = "EXPLAINED", text, "model"
     return result
+
+
+def explain_plan(
+    adapter: LLMAdapter | None, net: Network, record: dict[str, Any], viewer: str
+) -> ExplanationResult:
+    problems = verify_plan_record(net, record)
+    if problems:
+        return ExplanationResult(
+            "STALE_OR_TAMPERED",
+            viewer,
+            problems=problems[:5],
+            text="This plan no longer matches the current data; recompute it.",
+        )
+    view = merchant_view(record, viewer)
+    visible = {viewer} | {x for leg in view["my_legs"] for x in (leg["payer"], leg["payee"])}
+    everyone = {x for leg in record["selected_legs"] for x in (leg["payer"], leg["payee"])}
+    others = tuple(sorted((everyone | {record["focal_merchant"]}) - visible))
+    return narrate(adapter, plan_facts(record, viewer), viewer, others)

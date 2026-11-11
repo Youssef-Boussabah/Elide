@@ -32,7 +32,8 @@ from api.ai.prompts import (  # noqa: E402
 from api.ai.spend import SpendGuard  # noqa: E402
 from api.config import get_settings  # noqa: E402
 from api.negotiation.counteroffer import propose_counteroffer  # noqa: E402
-from api.negotiation.explain import explain_plan  # noqa: E402
+from api.negotiation.explain import explain_plan, narrate  # noqa: E402
+from api.opportunities.analysis import analyze, facts, merchant_view  # noqa: E402
 from api.planning.plan import build_plan  # noqa: E402
 from api.policy.service import draft_policy  # noqa: E402
 from fixtures import ai_demo  # noqa: E402
@@ -59,9 +60,13 @@ def values_match(proposed: dict, expected: dict) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["live", "mock"], required=True)
+    ap.add_argument("--model", default=None, help="override LLM_MODEL for this run")
     args = ap.parse_args()
     if args.mode == "live":
-        adapter = get_llm_adapter()
+        settings = get_settings()
+        if args.model:
+            settings = settings.model_copy(update={"llm_model": args.model})
+        adapter = get_llm_adapter(settings)
         if isinstance(adapter, UnconfiguredLLMAdapter):
             print("no LLM configured in .env")
             return 2
@@ -133,15 +138,21 @@ def main() -> int:
     co = propose_counteroffer(adapter, ai_demo.negotiation_case())
     net = fx.network_two_candidates()
     ex = explain_plan(adapter, net, build_plan(net), "buyer")
+    neg = fx.network_negotiation()
+    opp_view = merchant_view(analyze(neg), "buyer")
+    others = tuple(sorted(set(neg.merchants) - {"buyer", "food_supplier"}))
+    opp = narrate(adapter, facts(opp_view), "buyer", others)
 
     n = len(rows)
     ready_cases = [r for r in rows if READY in r["expected"]]
     not_ready = [r for r in rows if READY not in r["expected"]]
     calls = [r["model_call"] for r in rows if r["model_call"]]
-    calls += [x.as_dict() for x in (co.model_call, ex.model_call) if x]
+    calls += [x.as_dict() for x in (co.model_call, ex.model_call, opp.model_call) if x]
     summary = {
         "cases": n,
         "schema_valid": sum(r["schema_valid"] for r in rows),
+        "schema_failures": sum(1 for r in rows if r["status"] == "MODEL_OUTPUT_INVALID"),
+        "provider_call_failures": sum(1 for r in rows if r["status"] == "MODEL_UNAVAILABLE"),
         "status_agreement": sum(r["status_ok"] for r in rows),
         "ready_cases": len(ready_cases),
         "ready_correct_values": sum(1 for r in ready_cases if r["values_ok"]),
@@ -183,11 +194,21 @@ def main() -> int:
             "issues": [i.code for i in ex.issues],
             "model_call": ex.model_call.as_dict() if ex.model_call else None,
         },
+        "opportunity_explanation": {
+            "scenario": "negotiation (buyer view)",
+            "recommendation": opp_view["recommendation"],
+            "status": opp.status,
+            "text": opp.text,
+            "text_source": opp.source,
+            "issues": [i.code for i in opp.issues],
+            "model_call": opp.model_call.as_dict() if opp.model_call else None,
+        },
         "cases": rows,
     }
     out = ROOT / "evidence" / "phase3"
     out.mkdir(parents=True, exist_ok=True)
-    stem = out / f"ai_eval_{args.mode}_{datetime.now(UTC).date().isoformat()}"
+    slug = adapter.model.replace("/", "_").lower() if args.mode == "live" else "reference"
+    stem = out / f"ai_eval_{args.mode}_{slug}_{datetime.now(UTC).date().isoformat()}"
     stem.with_suffix(".json").write_text(json.dumps(doc, indent=1, default=str) + "\n", "utf-8")
     md = [
         f"# P3 AI evaluation ({args.mode.upper()})",
@@ -204,6 +225,8 @@ def main() -> int:
         f"Counteroffer: **{co.status}** {co.note}",
         "",
         f"Explanation: **{ex.status}** (text from {ex.source})",
+        "",
+        f"Opportunity narration (negotiation, buyer): **{opp.status}** (text from {opp.source})",
         "",
         "| Case | Category | Expected | Got | Values |",
         "|---|---|---|---|---|",

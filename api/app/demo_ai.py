@@ -4,6 +4,11 @@
 - POST /v1/demo/policies/validate      deterministic validation of edited fields (no model)
 - POST /v1/demo/negotiation/counteroffer  bounded counteroffer draft for the $5 -> $10 case
 - POST /v1/demo/plans/explain          plain-language explanation of a verified P2 plan
+- POST /v1/demo/opportunities          proactive read-only opportunity analysis (no model)
+- POST /v1/demo/opportunities/explain  the same, narrated from verified facts
+
+Routes that can call the model answer loopback clients only (403 otherwise) until P4
+adds authentication, so no public unauthenticated route can spend paid tokens.
 
 Every response separates `model_output` (untrusted, labelled REAL or MOCK) from
 `deterministic` results. Nothing here confirms a policy, signs terms, reserves cash,
@@ -17,14 +22,15 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.ai.adapter import LLMAdapter, get_llm_adapter
 from api.ai.schemas import PolicyExtraction
 from api.domain.money import USD, Money
 from api.negotiation.counteroffer import propose_counteroffer
-from api.negotiation.explain import explain_plan
+from api.negotiation.explain import explain_plan, narrate
+from api.opportunities.analysis import analyze, facts, merchant_view
 from api.planning.plan import build_plan
 from api.policy.service import MAX_TEXT_CHARS, draft_policy
 from api.policy.validation import ValidationReport, validate_policy
@@ -36,11 +42,23 @@ DemoMerchant = Literal["buyer", "food_supplier", "packaging_supplier", "carrier"
 LABELS = ["SYNTHETIC_DEMO", "NOT_EXECUTABLE", "NO_APPROVALS_CREATED"]
 
 
+LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+
+
+def require_local_client(request: Request) -> None:
+    """Routes that can spend model tokens answer only loopback clients until P4 adds
+    authentication (bind uvicorn to 127.0.0.1, its default)."""
+    host = request.client.host if request.client else ""
+    if host not in LOCAL_HOSTS:
+        raise HTTPException(403, "model-backed demo routes are local-only until P4 security")
+
+
 def get_adapter() -> LLMAdapter:
     return get_llm_adapter()
 
 
 Adapter = Annotated[LLMAdapter, Depends(get_adapter)]
+LocalOnly = [Depends(require_local_client)]
 
 
 class _Req(BaseModel):
@@ -86,7 +104,7 @@ def _report(rep: ValidationReport | None) -> dict[str, Any] | None:
     }
 
 
-@router.post("/policies/draft")
+@router.post("/policies/draft", dependencies=LocalOnly)
 def policy_draft(req: PolicyDraftRequest, adapter: Adapter) -> dict[str, Any]:
     d = draft_policy(
         adapter,
@@ -130,7 +148,7 @@ def _cents(s: str) -> int:
     return int(whole) * 100 + int((frac or "0").ljust(2, "0"))
 
 
-@router.post("/negotiation/counteroffer")
+@router.post("/negotiation/counteroffer", dependencies=LocalOnly)
 def counteroffer(req: CounterofferRequest, adapter: Adapter) -> dict[str, Any]:
     case = ai_demo.negotiation_case(
         requester_max_cents=_cents(req.requester_max_concession),
@@ -171,7 +189,7 @@ def counteroffer(req: CounterofferRequest, adapter: Adapter) -> dict[str, Any]:
     }
 
 
-@router.post("/plans/explain")
+@router.post("/plans/explain", dependencies=LocalOnly)
 def plans_explain(req: ExplainRequest, adapter: Adapter) -> dict[str, Any]:
     if req.scenario == "two_candidates":
         net = fx.network_two_candidates()
@@ -196,5 +214,75 @@ def plans_explain(req: ExplainRequest, adapter: Adapter) -> dict[str, Any]:
             "facts": [{"id": k, "text": v} for k, v in r.facts],
             "issues": [asdict(i) for i in r.issues],
             "plan_problems": r.problems,
+        },
+    }
+
+
+OPPORTUNITY_SCENARIOS = {
+    "two_candidates": fx.network_two_candidates,
+    "negotiation": fx.network_negotiation,
+    "timing_matters": fx.network_timing_matters,
+    "positive_sum": fx.network_positive_sum,
+    "held_receipt": fx.network_held_receipt,
+    "reserve_shortfall": fx.network_reserve_shortfall,
+    "cad_settlement": fx.network_cad_settlement,
+    "fee_cascade": fx.network_fee_cascade,
+}
+
+
+class OpportunityRequest(_Req):
+    scenario: Literal[
+        "two_candidates",
+        "negotiation",
+        "timing_matters",
+        "positive_sum",
+        "held_receipt",
+        "reserve_shortfall",
+        "cad_settlement",
+        "fee_cascade",
+    ] = "two_candidates"
+    viewer: DemoMerchant = "buyer"
+
+
+def _opportunity_view(req: OpportunityRequest) -> tuple[dict[str, Any], tuple[str, ...]]:
+    net = OPPORTUNITY_SCENARIOS[req.scenario]()
+    if req.viewer not in net.merchants:
+        raise HTTPException(404, "no such merchant in this scenario")
+    view = merchant_view(analyze(net), req.viewer)
+    visible = (
+        {req.viewer}
+        | {x for a in view["my_actions"] for x in (a["payer"], a["payee"])}
+        | {x for b in view["my_bottlenecks"] for x in (b["debtor"], b["creditor"])}
+    )
+    return view, tuple(sorted(set(net.merchants) - visible))
+
+
+@router.post("/opportunities")
+def opportunities(req: OpportunityRequest) -> dict[str, Any]:
+    """Deterministic, read-only opportunity analysis for one merchant (no model call)."""
+    view, _ = _opportunity_view(req)
+    return {
+        "labels": LABELS,
+        "model_call": None,
+        "deterministic": {"label": "DETERMINISTIC_ANALYSIS", **view},
+    }
+
+
+@router.post("/opportunities/explain", dependencies=LocalOnly)
+def opportunities_explain(req: OpportunityRequest, adapter: Adapter) -> dict[str, Any]:
+    view, others = _opportunity_view(req)
+    fs = facts(view)
+    r = narrate(adapter, fs, req.viewer, others)
+    return {
+        "labels": LABELS,
+        "status": r.status,
+        "text": r.text,
+        "text_source": r.source,
+        "model_call": r.model_call.as_dict() if r.model_call else None,
+        "deterministic": {
+            "label": "DETERMINISTIC_FACTS",
+            "recommendation": view["recommendation"],
+            "facts": [{"id": k, "text": v} for k, v in fs],
+            "issues": [asdict(i) for i in r.issues],
         },
     }

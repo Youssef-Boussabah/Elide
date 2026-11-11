@@ -159,6 +159,15 @@ _OPT_OUT = re.compile(
     r"do not participate|don't participate|not participate)\b",
     re.I,
 )
+_DATE_LIKE = re.compile(
+    r"\b(mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|saturdays?|sundays?|tomorrow|today|"
+    r"tonight|next (?:week|month|year)|end of (?:the )?(?:day|week|month|quarter|year)|"
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?|"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.? \d{1,2}(?:st|nd|rd|th)?"
+    r"(?:,? \d{4})?|\d{1,2}(?:st|nd|rd|th)? (?:of )?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|"
+    r"oct|nov|dec)[a-z]*(?:,? \d{4})?)\b",
+    re.I,
+)
 _APPROVE_EACH = re.compile(r"\bapprov\w*\b[^.\n]{0,30}\b(every|each|all)\b", re.I)
 
 
@@ -454,6 +463,27 @@ def validate_policy(
             out.append(mid)
         return tuple(sorted(set(out)))
 
+    # every date-like phrase in the text must be covered by an extracted date field
+    covered = [
+        (s[0], s[1])
+        for f, s in spans.items()
+        if f in ("policy_valid_until", "offer_response_deadline")
+    ]
+    for dm in (extraction.policy_valid_until, extraction.offer_response_deadline):
+        if dm is not None and (sp := locate(text, dm.quote)) is not None:
+            covered.append(sp)
+    for m_ in _DATE_LIKE.finditer(text):
+        if not any(a <= m_.start() and m_.end() <= b for a, b in covered):
+            add(
+                "UNCAPTURED_DATE",
+                "clarify",
+                None,
+                f"'{m_.group(0)}' looks like a date or deadline that the draft does not capture; "
+                "give an exact calendar date or confirm it does not apply",
+                (m_.start(), m_.end()),
+            )
+            break
+
     # participation / approval choices must be stated in the text, not inferred
     says_in = bool(_OPT_IN.search(text))
     says_out = bool(_OPT_OUT.search(text))
@@ -461,13 +491,17 @@ def validate_policy(
         add("UNGROUNDED", "block", "participation", "the instruction does not say to opt in")
     if extraction.participation == "opt_out" and not says_out:
         add("UNGROUNDED", "block", "participation", "the instruction does not say to opt out")
-    if extraction.approval_preference == "approve_each_payment" and not _APPROVE_EACH.search(text):
+    approval = extraction.approval_preference
+    if approval == "approve_each_payment" and not _APPROVE_EACH.search(text):
+        # never applied; dropping an unrequested extra approval step loses nothing
         add(
-            "UNGROUNDED",
-            "block",
+            "UNGROUNDED_PREFERENCE_IGNORED",
+            "info",
             "approval_preference",
-            "the instruction does not ask to approve each payment",
+            "the model suggested approving each payment, but the instruction does not say so; "
+            "ignored",
         )
+        approval = "unspecified"
 
     allowed = resolve(extraction.allowed_counterparties, "allowed_counterparties")
     prohibited = resolve(extraction.prohibited_counterparties, "prohibited_counterparties")
@@ -516,11 +550,7 @@ def validate_policy(
             if extraction.participation == "unspecified"
             else extraction.participation
         ),
-        approval_preference=(
-            cur.approval_preference
-            if extraction.approval_preference == "unspecified"
-            else extraction.approval_preference
-        ),
+        approval_preference=(cur.approval_preference if approval == "unspecified" else approval),
         spans=spans,
     )
     changes: list[dict[str, object]] = []
@@ -619,7 +649,7 @@ def validate_policy(
         or any(dates.values())
         or bool(allowed or prohibited)
         or extraction.participation != "unspecified"
-        or extraction.approval_preference != "unspecified"
+        or approval != "unspecified"
     )
     if not has_policy and not any(i.severity == "block" for i in issues):
         add("NO_POLICY_FOUND", "clarify", None, "no policy change was found in the instruction")
