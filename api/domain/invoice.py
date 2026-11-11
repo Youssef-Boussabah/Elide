@@ -376,6 +376,22 @@ class InvoiceRecord:
             raise UnauthorizedConcessionError("a rejection must be made by an invoice party")
         return replace(self, revisions=(*self.revisions, rev))
 
+    def open_offers(self, at: datetime) -> tuple[ObligationRevision, ...]:
+        """DRAFT revisions that could still be accepted at `at` (read-only, for planning).
+
+        An offer is open when it was made by `at`, is not expired at `at`, and no later
+        revision accepted, rejected or countered it.
+        """
+        check_aware(at, "at")
+        return tuple(
+            r
+            for r in self.revisions
+            if r.status is RevisionStatus.DRAFT
+            and r.created_at <= at
+            and not r.is_expired(at)
+            and self._closed_by(r.revision_no) is None
+        )
+
     def _closed_by(self, revision_no: int) -> int | None:
         """The revision that accepted, rejected or countered offer `revision_no`, if any."""
         return next((r.revision_no for r in self.revisions if r.supersedes == revision_no), None)
