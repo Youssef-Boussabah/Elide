@@ -9,6 +9,17 @@ Accounting identity enforced after every change (doc 04, without set-off):
   original terms (no concession). A concession counts only in an AUTHORIZED revision that
   both debtor and creditor authorized. DRAFT revisions (e.g. an AI-proposed discount) and
   REJECTED revisions never count.
+- Offer lifecycle (four different expiries, kept apart):
+  1. An *offer* is a DRAFT; its optional `expires_at` is the offer deadline. After it the
+     offer can no longer be accepted.
+  2. An *acceptance* is an AUTHORIZED revision with `supersedes` = the offer. It must be
+     made before the deadline, by both parties, with exactly the offered terms. Rejected,
+     already-accepted and countered offers are closed and cannot be accepted.
+  3. Accepted (AUTHORIZED) terms carry **no expiry**: they stay in force after the offer
+     deadline until later authorized terms replace them. A refund does not undo them.
+  4. Expiry of a payment authorization or executable plan is not an invoice property; it
+     belongs to approvals (P4) and capacity commitments (P2).
+  Elide never amends an invoice by itself: every AUTHORIZED revision needs both parties.
 - `SettlementEvent`s record cash applied and reversals of it. A reversal references the
   event it reverses; history is never edited or deleted.
 - Legal noncash set-off is out of scope (D011) and has no representation here.
@@ -215,6 +226,12 @@ class ObligationRevision:
             raise InvalidInvoiceError("concession must be Money")
         if self.expires_at is not None:
             check_aware(self.expires_at, "expires_at")
+            if self.status is not RevisionStatus.DRAFT:
+                raise InvalidInvoiceError(
+                    "only an offer (DRAFT) expires; accepted or rejected terms have no expiry"
+                )
+            if self.expires_at <= self.created_at:
+                raise InvalidInvoiceError("an offer must expire after it is made")
         if not isinstance(self.authorized_by, frozenset):
             raise InvalidInvoiceError("authorized_by must be a frozenset")
 
@@ -342,12 +359,7 @@ class InvoiceRecord:
             raise OverSettlementError("concession exceeds the original face amount")
         self._check_time(rev.created_at)
 
-        if rev.supersedes is not None:
-            prior = next((r for r in self.revisions if r.revision_no == rev.supersedes), None)
-            if prior is None:
-                raise ConflictingRevisionError(f"superseded revision {rev.supersedes} not found")
-            if prior.status is RevisionStatus.DRAFT and prior.is_expired(rev.created_at):
-                raise ExpiredRevisionError(f"draft revision {prior.revision_no} has expired")
+        self._check_supersession(rev)
 
         if rev.status is RevisionStatus.AUTHORIZED:
             parties = {self.obligation.debtor, self.obligation.creditor}
@@ -360,7 +372,52 @@ class InvoiceRecord:
                 raise OverSettlementError("cash applied plus new concession exceeds face")
         elif rev.authorized_by - {self.obligation.debtor, self.obligation.creditor}:
             raise UnauthorizedConcessionError("only the two invoice parties can authorize terms")
+        elif rev.status is RevisionStatus.REJECTED and not rev.authorized_by:
+            raise UnauthorizedConcessionError("a rejection must be made by an invoice party")
         return replace(self, revisions=(*self.revisions, rev))
+
+    def _closed_by(self, revision_no: int) -> int | None:
+        """The revision that accepted, rejected or countered offer `revision_no`, if any."""
+        return next((r.revision_no for r in self.revisions if r.supersedes == revision_no), None)
+
+    def _check_supersession(self, rev: ObligationRevision) -> None:
+        """Offer lifecycle (see module docstring):
+
+        - AUTHORIZED superseding a DRAFT is an *acceptance*: the offer must still be open
+          (not accepted, rejected or countered), not expired at `created_at`, and the
+          accepted terms must equal the offered terms.
+        - REJECTED must reference an open DRAFT. DRAFT superseding a DRAFT is a counteroffer.
+        - AUTHORIZED may also supersede earlier AUTHORIZED terms (an amendment).
+        - Nothing can build on a REJECTED revision.
+        """
+        if rev.supersedes is None:
+            if rev.status is RevisionStatus.REJECTED:
+                raise InvalidInvoiceError("a rejection must reference the offer it rejects")
+            return
+        prior = next((r for r in self.revisions if r.revision_no == rev.supersedes), None)
+        if prior is None:
+            raise ConflictingRevisionError(f"superseded revision {rev.supersedes} not found")
+        if prior.status is RevisionStatus.REJECTED:
+            raise ConflictingRevisionError(f"revision {prior.revision_no} was a rejection")
+        if prior.status is RevisionStatus.AUTHORIZED:
+            if rev.status is not RevisionStatus.AUTHORIZED:
+                raise ConflictingRevisionError(
+                    "only authorized terms can supersede authorized terms; make a new offer"
+                )
+            return
+        closer = self._closed_by(prior.revision_no)
+        if closer is not None:
+            raise ConflictingRevisionError(
+                f"offer {prior.revision_no} was already closed by revision {closer}"
+            )
+        if rev.status is RevisionStatus.AUTHORIZED:
+            if prior.is_expired(rev.created_at):
+                raise ExpiredRevisionError(f"offer {prior.revision_no} has expired")
+            offered = (prior.concession, prior.due_at, prior.business_tz)
+            if (rev.concession, rev.due_at, rev.business_tz) != offered:
+                raise ConflictingRevisionError(
+                    "an acceptance must match the offered terms; propose a new offer instead"
+                )
 
     # -- settlement events --------------------------------------------------------------
     def apply(self, event: SettlementEvent) -> InvoiceRecord:
