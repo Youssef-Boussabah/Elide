@@ -474,6 +474,7 @@ brute force: **640 / 640** identical value and schedule.
 | `pytest tests/integration` | **40 passed, 0 skipped** (incl. concurrent plan reservations) |
 | `pytest` (full) | **421 passed, 0 failed, 0 skipped**, 1 known Starlette warning |
 | Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
+| GitHub Actions run #9 (id 42941572698) on `d93072e` | **success**: backend (ruff, `alembic upgrade head`, `alembic check`, pytest) and frontend jobs |
 
 ### Remaining limitations / risks
 - Whole-invoice legs only: no partial payments or instalments.
@@ -569,3 +570,4 @@ brute force: **640 / 640** identical value and schedule.
   B0–B5, minimum liquidity, plan record, benchmark evidence, ADR-0009. 421 tests pass
   locally (0 skipped). No PayPal calls, no credential changes, no migration. Not merged.
   **Next task:** owner review of P2 (do not start P3).
+  CI run #9 on `d93072e` green (incl. the new `alembic check` step).
