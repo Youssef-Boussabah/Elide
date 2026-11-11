@@ -1,15 +1,27 @@
 # P3 demo API (synthetic data only)
 
-Base: `uv run uvicorn api.app.main:app --port 8000`. All endpoints are `POST`, accept JSON
-with **no unknown fields** (`422` otherwise), operate only on the synthetic fixtures in
-`fixtures/ai_demo.py` and `fixtures/planning.py`, write nothing to the database and never
-confirm, sign, approve, reserve or pay anything. Every response has
+Run locally: `uv run uvicorn api.app.main:app --host 127.0.0.1 --port 8000`. All endpoints
+are `POST`, accept JSON with **no unknown fields** (`422` otherwise), operate only on the
+synthetic fixtures in `fixtures/ai_demo.py` and `fixtures/planning.py`, write nothing to the
+database and never confirm, sign, approve, reserve or pay anything. Every response has
 `labels: ["SYNTHETIC_DEMO", "NOT_EXECUTABLE", "NO_APPROVALS_CREATED"]` and keeps
 `model_output` (untrusted; `model_call.label` is `REAL_MODEL_OUTPUT` or
 `MOCK_MODEL_OUTPUT`) separate from `deterministic` results.
 
-Without `LLM_PROVIDER` + `LLM_API_KEY` in `.env`, model-backed endpoints return a
-`MODEL_UNAVAILABLE` status (manual entry via `/policies/validate` still works).
+| Endpoint | Model call | Access until P4 | Purpose |
+|---|---|---|---|
+| `POST /v1/demo/policies/draft` | yes (`policy-extract-v2`) | **loopback only** (403 otherwise) | typed policy draft + deterministic validation |
+| `POST /v1/demo/policies/validate` | no | open (synthetic, free) | deterministic validation of edited fields |
+| `POST /v1/demo/negotiation/counteroffer` | yes (`counteroffer-v1`) | **loopback only** | bounded $5 -> $10 counteroffer draft |
+| `POST /v1/demo/plans/explain` | yes (`explain-v1`) | **loopback only** | narration of a re-verified P2 plan |
+| `POST /v1/demo/opportunities` | no | open (synthetic, free) | proactive, merchant-scoped opportunity analysis |
+| `POST /v1/demo/opportunities/explain` | yes (`explain-v1`) | **loopback only** | narration of the merchant-scoped opportunity facts |
+
+Routes that can spend model tokens answer only loopback clients (`127.0.0.1`, `::1`) until
+P4 authentication exists; model spend is also limited by the local software cap
+(`api/ai/spend.py`, an estimate; the provider console is the bill). Without
+`LLM_PROVIDER` + `LLM_API_KEY` in `.env`, model-backed endpoints return
+`MODEL_UNAVAILABLE` (manual entry via `/policies/validate` still works).
 
 ## `POST /v1/demo/policies/draft`
 
@@ -27,7 +39,7 @@ Response (abridged):
 {"draft_id": "pdr_…", "status": "READY_FOR_CONFIRMATION", "outcome": "VALIDATED",
  "model_output": {"label": "UNTRUSTED_MODEL_OUTPUT", "extraction": {"reserve_floor":
    {"amount": "600", "currency": "$", "quote": "Keep at least $600 protected"}, "…": "…"}},
- "model_call": {"provider": "nebius", "model": "…", "prompt_version": "policy-extract-v1",
+ "model_call": {"provider": "nebius", "model": "…", "prompt_version": "policy-extract-v2",
    "mocked": false, "label": "REAL_MODEL_OUTPUT", "input_tokens": 0, "output_tokens": 0,
    "estimated_cost_usd": "…", "context_sha256": "…"},
  "deterministic": {"label": "DETERMINISTIC_VALIDATION", "status": "READY_FOR_CONFIRMATION",
@@ -77,6 +89,29 @@ Response:
 - `status`: `EXPLAINED` or `TEMPLATE`
 - `text` and `text_source` (`model` or `deterministic_template`)
 - `deterministic.facts` (`F1`…), `deterministic.issues`, and `model_call`
+
+## `POST /v1/demo/opportunities`
+
+Request: `{"scenario": "two_candidates" | "negotiation" | "timing_matters" | "positive_sum" |
+"held_receipt" | "reserve_shortfall" | "cad_settlement" | "fee_cascade", "viewer": "<merchant>"}`
+(`404` if the viewer is not in that scenario). No model call.
+
+Response `deterministic` is the **viewer's own** derived view (`elide.opportunities.v1`):
+`recommendation` (personal: for the initiating merchant `RECOMMEND_PLAN`,
+`REVIEW_ECONOMICS`, `NEGOTIATE`, `NO_ACTION` or `BLOCKED`; for other participants
+`REVIEW_AND_DECIDE` / `REVIEW_ECONOMICS`; for merchants without a leg `NOTHING_FOR_YOU`),
+`my_actions`, `my_bottlenecks` (the blocking reason only when the viewer is the payer;
+creditors see `PAYER_SIDE`), `my_benefit`, `my_negotiation_hints`, `my_flags`, `conditions`
+and `execution.may_execute: false`. Only the initiating merchant also receives `decision`
+(feasibility, advantage vs B0/B1/B3, its own net benefit, the count of participants with
+undeclared losses, uncertainty, consent counts), `comparison` and network counts.
+
+## `POST /v1/demo/opportunities/explain`
+
+Same request. Returns `text` narrated by the model from the viewer's numbered facts only
+(`deterministic.facts`), checked for amounts not in the facts, merchants outside the view,
+acceptance and availability claims; otherwise the deterministic template is returned
+(`text_source`).
 
 ## P4 integration contract
 

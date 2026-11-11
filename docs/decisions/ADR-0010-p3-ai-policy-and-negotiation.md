@@ -174,3 +174,72 @@ must add tenant scoping and redaction before any real merchant text is used.
     loopback clients only (HTTP 403 otherwise) until P4 authentication exists. The
     deterministic routes `/policies/validate` and `/opportunities` stay open, but they use
     synthetic fixtures only and cost nothing.
+
+## Addendum (2026-11-11): final-review hardening
+
+17. **Recommendation semantics.** The analyzer now separates six things and keeps them
+    apart in a `decision` block:
+    - feasibility: a verified plan;
+    - advantage over B0 (do nothing), B1 (earliest-due-first) and B3 (random tie-break),
+      with `network_awareness_needed = B4 > B1`;
+    - the buyer's net benefit;
+    - each participant's net benefit;
+    - fee and availability uncertainty;
+    - outstanding consent: approvals required versus recorded.
+
+    `RECOMMEND_PLAN` requires a feasible plan that pays more on time than B0, with no
+    participant holding a modeled loss it has not declared it accepts. A merchant declares
+    acceptance through `min_receipt_net_benefit_cents`, and the loss must lie within that
+    declared threshold. When a plan improves on B0 but some participant has an undeclared
+    loss, the result is **`REVIEW_ECONOMICS`**. When B1 already matches B4, the reason says
+    it is not a network-aware improvement.
+
+    Every recommendation is conditional. No approval is recorded, no downstream funds are
+    verified spendable, and `execution.may_execute` stays false.
+
+    | Case | Result |
+    |---|---|
+    | Canonical | `REVIEW_ECONOMICS`: B4 = B1 = $2,700 on time, buyer +$3.70, supplier −$10.00 |
+    | Positive-sum, timing (constructed) | `RECOMMEND_PLAN` |
+18. **Merchant-scoped views.** `merchant_view` derives its own recommendation and facts
+    for each merchant; nothing global is copied into them.
+    - **Every merchant:** its own legs, its own invoices, benefit, approvals and flags.
+    - **The payer of an invoice:** also sees why the payment is blocked. The creditor sees
+      only `PAYER_SIDE`.
+    - **Merchants with no leg:** receive `NOTHING_FOR_YOU`.
+    - **Network-level data** (totals, counts, flags such as the number of approvals, and
+      baseline comparisons) goes to the initiating merchant only. Even that merchant
+      receives only its own net benefit and a *count* of participants with undeclared
+      losses, because other participants' nets reflect their private inputs.
+    - **Model prompts** are built only from these views.
+    - **The P2 plan explanation** also stops telling non-initiating merchants how many
+      other payments exist.
+
+    Adversarial tests on `privacy-probe-v1` cover views and model prompts. It uses
+    distinctive private cash, reserves, a hidden counterparty and invoice ids, and private
+    supplier rules in the counteroffer prompt. P3 remains synthetic: in P4 the viewer must
+    be the authenticated tenant principal.
+19. **Atomic spend reservation.** `SpendGuard.reserve` adds the upper-bound estimate inside
+    one critical section and refuses if committed + outstanding + estimate would exceed
+    the cap. The section is held under a process-wide thread lock and an exclusive lock
+    file next to the ledger, so threads and separate processes cannot over-reserve. After
+    the call:
+    - success: `commit` replaces the reservation with the usage-based estimate;
+    - certainly not sent (connection error, non-200): `release`;
+    - unknown outcome (timeout): commit at the full estimate.
+
+    A held lock fails closed and is never broken automatically. Tests cover 16 threads and
+    8 processes. This remains a **local software cap over estimates**, not a
+    provider-side billing limit.
+20. **Evaluation honesty.** The 40-case `policy-eval-v1` set was used for development and
+    tuning: prompt v2, the approval-preference change and the `UNCAPTURED_DATE` check.
+    It is not an independent held-out evaluation.
+
+    | Run | Result |
+    |---|---|
+    | Selected Qwen3-235B, final run | 38/40 status agreement, 16/17 exact values, 0 schema failures, 1 provider-call failure (`MODEL_UNAVAILABLE`), 0 unsafe passes |
+    | Earlier v2 runs | 39/40 |
+    | gpt-oss-120b, before the date check | the one unsafe pass, preserved as evidence and as `adv-13` |
+
+    Spend: about USD 0.06 actually consumed, from the Nebius console (trial credits
+    0.99 → 0.93), against a local upper-bound estimate of USD 0.123.

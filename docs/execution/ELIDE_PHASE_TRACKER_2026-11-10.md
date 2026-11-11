@@ -549,7 +549,7 @@ credit purchases, no dedicated endpoints). OpenAI-compatible strict JSON-schema 
 | MOCK eval (`run_ai_eval.py --mode mock`, reference extractions; **not model evidence**) | 40/40 status agreement, 17/17 READY values exact, 23/23 correct abstentions, **0 unsafe passes**; all 12 compromised outputs refused |
 | REAL model inference | done; see *Real model inference* below |
 
-### Real model inference (Nebius Token Factory, 2026-11-11). REAL, kept separate from the deterministic results
+### Real model inference (Nebius Token Factory, 2026-11-11; the 40 cases are a development/tuning set, not a held-out evaluation). REAL, kept separate from the deterministic results
 - Authentication verified through the model list; the key was never printed.
 - Spend:
 
@@ -575,6 +575,31 @@ Earlier runs, kept as evidence:
 A label mismatch recurs: rel-01 ("Lower my reserve to $200") comes back NEEDS_CLARIFICATION instead of REJECTED, because the model refuses instead of extracting a value. That is safe.
 
 Real counteroffer (Qwen3-235B): **DRAFT_PROPOSED** at $10.00, and the message passed every guard. The real plan explanation and the real opportunity narration both came back **EXPLAINED**, and their fact checks passed.
+
+### P3 final-review hardening (2026-11-11)
+Reproduction: `evidence/phase3/review_hardening_reproduction_2026-11-11.txt`. ADR-0010
+addendum, decisions 17–20. No new model calls; no PayPal operations.
+
+| # | Review item | Reproduced | Fix |
+|---|---|---|---|
+| 1 | Recommendation semantics | yes: the canonical case returned RECOMMEND_PLAN despite the supplier's undeclared −$10 and B1 = B4 | `decision` block (feasibility, advantage vs B0/B1/B3, buyer and participant nets, uncertainty, consent). **REVIEW_ECONOMICS** when a participant has an undeclared modeled loss. The reason states when B1 achieves the same result. Every recommendation is conditional (no approvals, no spendable downstream funds). The canonical case keeps B4 = B1 = $2,700, buyer +$3.70, supplier −$10; the positive-sum and timing cases stay RECOMMEND_PLAN |
+| 2 | Merchant-view privacy | yes: the network total, the approvals count and the payer's private reason reached other merchants and their model prompts; a non-participant was told RECOMMEND_PLAN | separately derived merchant views and personal recommendations; creditors see `PAYER_SIDE`; network data goes to the initiating merchant only, without other participants' nets; plan explanations drop the "other payments" count for non-initiators |
+| 3 | Spend control | yes: with the old check-then-record API, two overlapping calls passed `check()` and recorded $0.008 against a $0.006 cap | atomic `reserve` → `commit`/`release` under a thread lock and a cross-process lock file; fails closed; unknown outcomes are committed at the estimate. Still a local estimate, not provider billing |
+| 4 | Docs and evaluation | — | `docs/api/P3_DEMO_API.md` covers all six endpoints, their access level and the actual prompt versions (`policy-extract-v2`, `counteroffer-v1`, `explain-v1`). Full evaluation history preserved. The 40-case set is **development/tuning data, not a held-out evaluation** |
+
+New regression tests (10 failed against the pre-fix analyzer and explainer):
+- `tests/unit/ai/test_privacy_scoping.py` (13): views and model prompts for 5 merchants, the plan-explanation prompts, the initiating-merchant-only comparisons, payer-only reasons, and the counteroffer prompt with distinctive supplier rules.
+- `tests/unit/ai/test_opportunities.py`: REVIEW_ECONOMICS, positive-sum and timing still recommended, declared acceptable loss.
+- `tests/unit/ai/test_spend_guard.py` (6): overlapping reservations, 16 threads, 8 processes, commit/release, a held lock fails closed, and adapter release/commit on errors.
+
+Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.1:5433`):
+| Check | Result |
+|---|---|
+| `ruff check .` / `ruff format --check .` | pass / pass (165 files) |
+| `alembic check` | no drift (no migration in P3) |
+| `pytest` (full) | **633 passed, 0 failed, 0 skipped**, 1 known Starlette warning |
+| `pytest tests/integration` (PostgreSQL) | **40 passed, 0 skipped** |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
 
 ### Opportunity analysis and security (code `860d980`)
 - `api/opportunities` is a proactive, read-only analysis that needs no prompt. It returns:
@@ -706,3 +731,7 @@ Real counteroffer (Qwen3-235B): **DRAFT_PROPOSED** at $10.00, and the message pa
   console-verified): 3 models evaluated, Qwen3-235B selected; prompt v2 and UNCAPTURED_DATE
   fix from live results; opportunity analysis; model routes loopback-only. 612 tests pass;
   CI run #15 green. Not merged. **Next task:** owner review of P3 (do not start P4).
+- 2026-11-11 (Claude Code, Opus 5.5): P3 final-review hardening: REVIEW_ECONOMICS semantics,
+  separately derived merchant-scoped views and prompts (privacy-probe tests), atomic spend
+  reservation (threads + processes), six-endpoint API doc, evaluation caveats. 633 tests pass.
+  No model or PayPal calls. Not merged. **Next task:** owner review of P3 (do not start P4).

@@ -1,0 +1,44 @@
+P3 final review: defects reproduced before the hardening fixes
+=================================================================
+Code under test: feat/p3-ai-policy-negotiation @ baf5a633093bd6ff3d3180d73b8bdc5bd4538926
+Date: 2026-11-11 (Windows 11, Python 3.12). Evidence class: Synthetic-tested.
+No model calls, no PayPal calls. Networks: fixtures.planning.network_two_candidates and
+fixtures.privacy_probe.network_privacy_probe (distinctive private values).
+
+1. Recommendation semantics (canonical two candidates)
+   Old output: action RECOMMEND_PLAN | "the plan pays USD 2,700.00 more invoice face on time
+   than doing nothing"
+   Facts: B4 - B0 = 270000, B4 - B1 = 0, supplier net -1000 (undeclared), buyer net +370.
+   Defect: RECOMMEND_PLAN regardless of a participant's undeclared modeled loss; no
+   disclosure that earliest-due-first (B1) achieves the same outcome.
+
+2. Merchant-view privacy (privacy probe network; old merchant facts, verbatim excerpts)
+   secret_vendor (not in the plan, creditor of the buyer's blocked invoice):
+     "Recommendation: RECOMMEND_PLAN - the plan pays USD 2,650.00 more invoice face on time"
+     "Invoice secret_inv_9 (USD 4,321.09) is not paid on time without coordination: paying
+      early needs >= USD 10.00 extra discount, terms give USD 0.00."   <- buyer's private rule
+     "Flag APPROVALS_OUTSTANDING: 4 approvals required; none recorded" <- network size
+   carrier / food_supplier: the same network total (USD 2,650.00) and approvals count.
+   The same facts were sent verbatim to the model for narration.
+   Defects: global network amount and network flags copied into every view; the payer's
+   private reason shown to its creditor; non-participants told RECOMMEND_PLAN; the
+   initiating merchant's decision data would have included other participants' private
+   net benefits.
+
+3. Spend control (old api/ai/spend.py, check() then record())
+   Demonstration with the old module from baf5a63, cap USD 0.006:
+     OLD API: two overlapping calls both passed check(); recorded total 0.008 > cap 0.006
+   Defect: check and record were separate operations; concurrent calls (threads or
+   processes) could all pass the check before any of them recorded spend.
+
+New regression tests run against the pre-fix analyzer/explainer (spend fix excluded
+because the new reservation API did not exist yet):
+   tests/unit/ai/test_privacy_scoping.py + tests/unit/ai/test_opportunities.py:
+   10 failed, 18 passed
+   (failed: opportunity view/prompt scoping for carrier, food_supplier, mechanic,
+    secret_vendor; network comparisons for the initiating merchant only; creditor never
+    sees the payer's reason; REVIEW_ECONOMICS for the canonical case; carrier view scope;
+    positive-sum/timing recommended and conditional; declared acceptable loss)
+   tests/unit/ai/test_spend_guard.py: not importable against the old spend.py (no
+   reservation API).
+After the fixes: all of them pass (see the tracker's P3 hardening section).
