@@ -12,6 +12,7 @@ labelled SYNTHETIC with `GENERATOR_VERSION`.
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from api.domain.invoice import DisputeStatus, Provenance, SourceKind
@@ -69,7 +70,14 @@ def _edges(family: str, rng: random.Random, n_obl: int) -> list[tuple[int, int]]
     return edges
 
 
-def generate(family: str, seed: int, *, max_obligations: int = 4, slots: int = 3) -> Network:
+def generate(
+    family: str,
+    seed: int,
+    *,
+    max_obligations: int = 4,
+    slots: int = 3,
+    supplier_rules: bool = False,
+) -> Network:
     if family not in FAMILIES:
         raise ValueError(f"unknown family {family!r}")
     # synthetic test data, not security-sensitive
@@ -102,6 +110,16 @@ def generate(family: str, seed: int, *, max_obligations: int = 4, slots: int = 3
                 source=f"synthetic:{GENERATOR_VERSION}",
             )
         )
+    if supplier_rules:  # separate draws, so default networks (and the benchmark) are unchanged
+        rules = random.Random(f"{GENERATOR_VERSION}:rules:{family}:{seed}")  # noqa: S311
+        policies = [
+            replace(
+                p,
+                min_receipt_net_benefit_cents=rules.choice([None, 0, -500, 200]),
+                receipt_cost_cents=rules.choice([0, 0, 100, 400]),
+            )
+            for p in policies
+        ]
     lag = AvailabilityModel(
         "synthetic_delay" if family == "lagged" else "synthetic_zero_lag",
         default_lag=rng.choice([1, 2]) if family == "lagged" else 1,

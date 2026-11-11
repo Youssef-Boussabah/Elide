@@ -115,3 +115,33 @@ def test_truncated_search_is_never_optimal(net, limit):
         assert r.status is not SolverStatus.OPTIMAL
     if r.status is SolverStatus.FEASIBLE:
         assert verify(net, r.schedule).ok
+
+
+@SETTINGS
+@given(
+    st.builds(
+        lambda family, seed: generate(
+            family, seed, max_obligations=4, slots=3, supplier_rules=True
+        ),
+        st.sampled_from(FAMILIES),
+        st.integers(0, 10_000),
+    ),
+    st.booleans(),
+)
+def test_supplier_rules_bind_solver_and_brute_force_alike(net, proposals):
+    cfg = SolveConfig(allow_proposals=proposals)
+    r = solve(net, cfg)
+    ref = brute_force(net, cfg)
+    assert ref is not None and r.value == ref.value and r.schedule == ref.schedule
+    rep = verify(net, r.schedule, allow_proposals=proposals)
+    assert rep.ok, rep.violations
+    for leg in rep.metrics.legs:
+        floor = net.policy(leg.payee).min_receipt_net_benefit_cents
+        if floor is not None and (leg.extra_concession_cents > 0 or leg.accelerated):
+            assert (
+                leg.receipt_value_cents
+                - leg.extra_concession_cents
+                - leg.payee_fee_cents
+                - leg.receipt_cost_cents
+                >= floor
+            )

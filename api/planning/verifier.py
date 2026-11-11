@@ -78,6 +78,9 @@ class LegReport:
     seconds_early: int
     time_cost_cents: int
     receipt_value_cents: int
+    receipt_cost_cents: int  # payee's declared modeled cost of the changed terms
+    open_before_cents: int  # outstanding before this leg: face - prior cash - in-force concession
+    prior_cash_applied_cents: int  # cash applied before planning (not new cash movement)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +95,7 @@ class MerchantOutcome:
     fees_paid: int
     opportunity_cost: int
     early_receipt_value: int
+    other_costs: int
     net_benefit: int
     existing_draw_cents: int  # peak use of its own funds
     hypothetical_need_cents: int  # peak gap its own funds could not cover
@@ -115,6 +119,12 @@ class Metrics:
     required_met: bool
     merchants: tuple[MerchantOutcome, ...]
     legs: tuple[LegReport, ...]
+    # Outstanding obligations discharged by the selected legs (not original face):
+    discharged_open: int  # = discharged_cash + discharged_new_concession
+    discharged_cash: int  # cash moved by the plan
+    discharged_new_concession: int  # concessions beyond the terms in force
+    on_time_discharged_open: int
+    prior_cash_excluded: int  # cash applied before planning on the invoices paid
 
     @property
     def liquidity_dollar_days(self) -> Fraction:
@@ -316,6 +326,22 @@ def verify(
                         f"payer's minimum net benefit",
                     )
                 )
+        affected = extra > 0 or accelerated
+        rcost = payee_pol.receipt_cost_cents if affected else 0
+        floor = payee_pol.min_receipt_net_benefit_cents
+        payee_net = value - extra - o.fee.payee_fee.cents - rcost
+        if affected and floor is not None and payee_net < floor:
+            bad.append(
+                Violation(
+                    "PAYEE_REJECTS",
+                    leg_id,
+                    slot,
+                    o.payee,
+                    f"{o.payee}: receipt value {_usd(value)} - concession {_usd(extra)} - fee "
+                    f"{_usd(o.fee.payee_fee.cents)} - cost {_usd(rcost)} = {_usd(payee_net)}, "
+                    f"below its declared minimum {_usd(floor)}",
+                )
+            )
         lag = net.availability.lag(o.payee)
         reports[leg_id] = LegReport(
             leg_id=leg_id,
@@ -336,6 +362,9 @@ def verify(
             seconds_early=secs,
             time_cost_cents=cost,
             receipt_value_cents=value,
+            receipt_cost_cents=rcost,
+            open_before_cents=e.face.cents - e.cash_applied.cents - e.in_force_concession.cents,
+            prior_cash_applied_cents=e.cash_applied.cents,
         )
 
     # -- 2. cash replay -------------------------------------------------------------------
@@ -429,6 +458,7 @@ def verify(
         )
         cost = sum(r.time_cost_cents for r in mine_out)
         value = sum(r.receipt_value_cents for r in mine_in)
+        other = sum(r.receipt_cost_cents for r in mine_in)
         low = min_slack.get(m)
         outcomes.append(
             MerchantOutcome(
@@ -442,7 +472,8 @@ def verify(
                 fees_paid=fee_paid,
                 opportunity_cost=cost,
                 early_receipt_value=value,
-                net_benefit=gained - given - fee_paid - cost + value,
+                other_costs=other,
+                net_benefit=gained - given - fee_paid - cost + value - other,
                 existing_draw_cents=draw[m],
                 hypothetical_need_cents=need_peak[m],
                 hypothetical_cents=inject.get(m, 0),
@@ -458,7 +489,7 @@ def verify(
         fees=fees,
         early_cash=sum(r.debit_cents for r in legs if r.accelerated),
         cent_seconds=sum(r.debit_cents * r.seconds_early for r in legs),
-        surplus=sum(r.receipt_value_cents - r.time_cost_cents for r in legs),
+        surplus=sum(r.receipt_value_cents - r.time_cost_cents - r.receipt_cost_cents for r in legs),
         focal_net=next(o.net_benefit for o in outcomes if o.merchant_id == focal),
         downstream_face=sum(face[r.obligation_id] for r in legs if r.on_time and r.payer != focal),
         in_transit=sum(in_transit.values()),
@@ -466,5 +497,12 @@ def verify(
         required_met=not missing,
         merchants=tuple(outcomes),
         legs=legs,
+        discharged_open=sum(r.amount_cents + r.extra_concession_cents for r in legs),
+        discharged_cash=sum(r.amount_cents for r in legs),
+        discharged_new_concession=sum(r.extra_concession_cents for r in legs),
+        on_time_discharged_open=sum(
+            r.amount_cents + r.extra_concession_cents for r in legs if r.on_time
+        ),
+        prior_cash_excluded=sum(r.prior_cash_applied_cents for r in legs),
     )
     return VerificationReport(ok=not bad, violations=tuple(bad), metrics=metrics)

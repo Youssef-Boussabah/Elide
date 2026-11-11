@@ -116,11 +116,23 @@ def _buyer_position(as_of, c, spendable=149000, hours=4):
 
 
 def network_two_candidates(
-    buyer_hurdle_bps: int = 800, evidence_hours: int = 4, pack_concession: int = 1000
+    buyer_hurdle_bps: int = 800,
+    evidence_hours: int = 4,
+    pack_concession: int = 1000,
+    supplier_policy: MerchantPolicy | None = None,
 ) -> Network:
-    """Two $10-off offers on $1,000 invoices; buyer can afford one ($990 deployable)."""
+    """Two $10-off offers on $1,000 invoices; buyer can afford one ($990 deployable).
+
+    Canonical economics (unchanged since `canonical-p2-v1`): buyer +$3.70 modeled, food
+    supplier -$10.00 modeled (it signed the offer but declared no receipt value or
+    threshold). This is NOT a win-win; see `network_positive_sum` for one with disclosed
+    supplier assumptions.
+    """
     c = clock()
     ms = ("buyer", "food_supplier", "packaging_supplier", "carrier", "mechanic")
+    overrides = {"buyer": buyer_policy(buyer_hurdle_bps)}
+    if supplier_policy is not None:
+        overrides[supplier_policy.merchant_id] = supplier_policy
     return build_network(
         "canonical_two_candidates",
         as_of=PLAN_AS_OF,
@@ -129,7 +141,7 @@ def network_two_candidates(
         focal_merchant="buyer",
         positions=[_buyer_position(PLAN_AS_OF, c, hours=evidence_hours)]
         + [synthetic_position(m) for m in ms[1:]],
-        policies=_policies(ms, buyer=buyer_policy(buyer_hurdle_bps)),
+        policies=_policies(ms, **overrides),
         invoices=[
             InvoiceInput(_offer("food_001", "food_supplier", 1000)),
             InvoiceInput(_offer("pack_001", "packaging_supplier", pack_concession)),
@@ -364,3 +376,106 @@ def network_small_two_slot() -> Network:
     from api.planning.generator import generate
 
     return generate("two_candidates", 7, max_obligations=3, slots=2)
+
+
+# --- hardening fixtures (added after the canonical-p2-v1 benchmark; it is unchanged) ------
+POSITIVE_SUM_ASSUMPTIONS = (
+    "SYNTHETIC_ASSUMPTIONS (disclosed): food_supplier states early cash is worth 20%/yr to it "
+    "(e.g. it would otherwise draw a costly credit line), declares a USD 2.00 cost of "
+    "accepting changed terms, will not give more than USD 10.00, and requires a modeled net "
+    "benefit >= USD 0.00; buyer hurdle 8%/yr and minimum USD 10.00 discount as in canonical"
+)
+
+
+def supplier_policy(**kw) -> MerchantPolicy:
+    return MerchantPolicy("food_supplier", **kw)
+
+
+def network_positive_sum() -> Network:
+    """Both buyer and food supplier have a positive MODELED net benefit, under the
+    disclosed synthetic assumptions above (not representative, not evidence)."""
+    pol = supplier_policy(
+        early_receipt_value_bps=2000,
+        receipt_cost_cents=200,
+        max_concession_given=usd(1000),
+        min_receipt_net_benefit_cents=0,
+    )
+    net = network_two_candidates(supplier_policy=pol)
+    return replace(
+        net,
+        network_id="synthetic_positive_sum",
+        labels=(*net.labels, "CONSTRUCTED_EXAMPLE", POSITIVE_SUM_ASSUMPTIONS),
+    )
+
+
+def network_partially_paid() -> Network:
+    """food_001 ($1,000) already had $400 applied before planning; a $10-off offer remains."""
+    from api.domain.invoice import SettlementEvent, SettlementKind
+
+    record = invoice("food_001", "buyer", "food_supplier", 100000).apply(
+        SettlementEvent(
+            "pay_prior_400",
+            "food_001",
+            SettlementKind.CASH_APPLIED,
+            usd(40000),
+            AS_OF + timedelta(minutes=1),
+            SYN,
+        )
+    )
+    record = early_discount(
+        record,
+        1000,
+        status=RevisionStatus.DRAFT,
+        authorized_by=frozenset({"food_supplier"}),
+        minutes=5,
+        expires_minutes=60,
+    )
+    c = clock()
+    ms = ("buyer", "food_supplier", "carrier", "mechanic")
+    return build_network(
+        "synthetic_partially_paid",
+        as_of=PLAN_AS_OF,
+        clock=c,
+        availability=SYNTHETIC_ZERO_LAG,
+        focal_merchant="buyer",
+        positions=[_buyer_position(PLAN_AS_OF, c)] + [synthetic_position(m) for m in ms[1:]],
+        policies=_policies(ms, buyer=buyer_policy()),
+        invoices=[InvoiceInput(record), *_downstream()],
+        labels=BASE_LABELS,
+    )
+
+
+TIMING_ASSUMPTIONS = (
+    "CONSTRUCTED_EXAMPLE (not representative): buyer has USD 1,000 now and a verified "
+    "USD 1,000 receipt usable at slot 5; packaging invoice due day 8, food invoice due day 9, "
+    "and the food supplier owes the carrier USD 900 due day 2. Buyer hurdle 0 and no minimum "
+    "discount (it is indifferent to paying early)."
+)
+
+
+def network_timing_matters() -> Network:
+    """Earliest-due-first pays packaging first and makes the carrier late; paying food
+    first (both buyer invoices still on time) keeps everyone on time."""
+    from api.planning.network import ScheduledInflow
+
+    c = clock(slots=10)
+    buyer = replace(
+        synthetic_position("buyer", 100000, 0),
+        inflows=(ScheduledInflow("rcpt_syn_buyer", usd(100000), 5, "synthetic"),),
+    )
+    ms = ("buyer", "food_supplier", "packaging_supplier", "carrier")
+    return build_network(
+        "constructed_timing_matters",
+        as_of=PLAN_AS_OF,
+        clock=c,
+        availability=SYNTHETIC_ZERO_LAG,
+        focal_merchant="buyer",
+        positions=[buyer] + [synthetic_position(m) for m in ms[1:]],
+        policies=_policies(ms),
+        invoices=[
+            InvoiceInput(invoice("pack_001", "buyer", "packaging_supplier", 100000, due_days=8)),
+            InvoiceInput(invoice("food_001", "buyer", "food_supplier", 100000, due_days=9)),
+            InvoiceInput(invoice("freight_001", "food_supplier", "carrier", 90000, due_days=2)),
+        ],
+        labels=(*BASE_LABELS, "CONSTRUCTED_EXAMPLE", TIMING_ASSUMPTIONS),
+    )

@@ -282,16 +282,29 @@ class MerchantPolicy:
     early_receipt_value_bps: int = 0  # stated annual value of receiving cash early
     max_fee_per_leg: Money | None = None
     max_concession_given: Money | None = None  # as payee, on top of in-force terms
+    # As payee, for a leg that changes its outcome (extra concession or early payment):
+    # stated early-receipt value - extra concession - payee fee - receipt_cost_cents must
+    # be >= this. None = no declared threshold (the merchant may still have signed terms
+    # that are a modeled loss; plans flag that, they never call it a win-win).
+    min_receipt_net_benefit_cents: int | None = None
+    receipt_cost_cents: int = 0  # declared modeled cost of accepting changed terms
     prohibited_counterparties: frozenset[str] = frozenset()
     source: str = "synthetic"
 
     def __post_init__(self) -> None:
         check_id(self.merchant_id, "merchant_id")
-        for v in (self.hurdle_bps, self.early_receipt_value_bps, self.min_net_benefit_cents):
+        ints = (
+            self.hurdle_bps,
+            self.early_receipt_value_bps,
+            self.min_net_benefit_cents,
+            self.receipt_cost_cents,
+            0 if self.min_receipt_net_benefit_cents is None else self.min_receipt_net_benefit_cents,
+        )
+        for v in ints:
             if isinstance(v, bool) or not isinstance(v, int):
                 raise NetworkError("policy rates and benefits are ints")
-        if self.hurdle_bps < 0 or self.early_receipt_value_bps < 0:
-            raise NetworkError("rates cannot be negative")
+        if self.hurdle_bps < 0 or self.early_receipt_value_bps < 0 or self.receipt_cost_cents < 0:
+            raise NetworkError("rates and costs cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)

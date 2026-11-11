@@ -9,6 +9,10 @@ payment, alters an invoice or creates a merchant approval.
 
 `merchant_view` gives one merchant only its own legs, approvals, benefit and reservation;
 other merchants' cash, reserves, invoices and benefits are not included.
+
+`plan_id` is a content checksum and `verify_plan_record` re-derives every field from the
+immutable network. Neither is an authorization or a signature: execution (P4/P5) must
+reload current state and validate real merchant approvals.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from api.domain.money import USD, Money
 from api.liquidity.capacity import Commitment
 from api.planning.baselines import run_baselines
 from api.planning.network import Network, TermsKind
-from api.planning.objective import TIERS, Objective
+from api.planning.objective import TIERS, Objective, objective_value
 from api.planning.solver import (
     SOLVER_NAME,
     SOLVER_VERSION,
@@ -33,7 +37,7 @@ from api.planning.solver import (
     minimum_liquidity,
     solve,
 )
-from api.planning.verifier import VERIFIER_VERSION, verify
+from api.planning.verifier import VERIFIER_VERSION, VerificationReport, verify
 
 PLAN_SCHEMA_VERSION = "elide.plan.v1"
 
@@ -143,24 +147,45 @@ def _metrics_summary(m) -> dict[str, int]:
     }
 
 
-def build_plan(
-    net: Network,
-    *,
-    allow_proposals: bool = False,
-    required: frozenset[str] = frozenset(),
-) -> dict[str, Any]:
-    cfg = SolveConfig(allow_proposals=allow_proposals, required=frozenset(required))
-    res = solve(net, cfg)
-    sched = res.schedule
-    rep = verify(net, sched, allow_proposals=allow_proposals, required=cfg.required)
-    verified = rep.ok or res.status is SolverStatus.INFEASIBLE
-    m = rep.metrics
-    focal = net.focal_merchant
+INTEGRITY = {
+    "plan_id": "plan_ + first 16 hex digits of SHA-256 over the canonical JSON "
+    "(sorted keys, no whitespace) of every field except plan_id",
+    "verification": "verify_plan_record re-derives every financial field from the immutable "
+    "network with the independent verifier, then rebuilds the whole record deterministically "
+    "and compares it field by field",
+    "note": "A matching plan_id is a content checksum, not an authorization or a "
+    "cryptographic signature. Any future execution must reload current state and validate "
+    "real merchant approvals; a P2 plan is never executable.",
+}
+ECONOMICS_NOTE = (
+    "Modeled from declared SYNTHETIC inputs (discounts, fees, hurdle rates, stated "
+    "early-receipt values). Not evidence that any participant actually benefits."
+)
+DISCHARGED_NOTE = (
+    "on_time_face_cents = original invoice face of invoices paid by their due slot (the "
+    "published B0-B5 metric); open_discharged_cents = outstanding value the selected legs "
+    "discharge (cash + new concessions, excluding cash applied before planning); "
+    "gross_flow_cents = sum of cash moved by all legs, which counts re-spent cash again; "
+    "incremental_* = plan minus a baseline on the same network."
+)
 
-    deps = _dependencies(net, sched, allow_proposals)
+
+def content_id(record: dict[str, Any]) -> str:
+    return "plan_" + _digest({k: v for k, v in record.items() if k != "plan_id"})[:16]
+
+
+def _verified_sections(
+    net: Network,
+    sched: tuple[ScheduledLeg, ...],
+    allow: bool,
+    rep: VerificationReport,
+) -> dict[str, Any]:
+    """Every financially important field, derived only from the network and the verifier's
+    replay of `sched` (never from the solver)."""
+    m = rep.metrics
+    deps = _dependencies(net, sched, allow)
     reports = {r.leg_id: r for r in m.legs}
-    selected = []
-    approvals = []
+    selected, approvals = [], []
     for x in sched:
         o = net.option(x.option_id)
         r = reports[x.option_id]
@@ -168,8 +193,7 @@ def build_plan(
             {"merchant_id": a.merchant_id, "action": a.action, "basis": a.basis.value}
             for a in sorted(o.authorizations, key=lambda a: (a.merchant_id, a.action))
         ]
-        for a in leg_approvals:
-            approvals.append({"leg_id": o.option_id, **a})
+        approvals.extend({"leg_id": o.option_id, **a} for a in leg_approvals)
         selected.append(
             {
                 "leg_id": o.option_id,
@@ -183,6 +207,8 @@ def build_plan(
                 "amount_cents": o.cash.cents,
                 "concession_cents": o.concession.cents,
                 "extra_concession_cents": r.extra_concession_cents,
+                "open_before_cents": r.open_before_cents,
+                "prior_cash_applied_cents": r.prior_cash_applied_cents,
                 "payer_fee_cents": o.fee.payer_fee.cents,
                 "payee_fee_cents": o.fee.payee_fee.cents,
                 "fee_status": o.fee.status.value,
@@ -196,16 +222,7 @@ def build_plan(
                 "approvals": leg_approvals,
             }
         )
-
-    draws = [
-        {
-            "merchant_id": mo.merchant_id,
-            "cents": mo.existing_draw_cents,
-            "evidence_id": net.position(mo.merchant_id).evidence_id,
-        }
-        for mo in m.merchants
-        if mo.existing_draw_cents
-    ]
+    parties = sorted({x["payer"] for x in selected} | {x["payee"] for x in selected})
     benefits = {
         mo.merchant_id: {
             "discount_gained_cents": mo.discount_gained,
@@ -213,38 +230,16 @@ def build_plan(
             "fees_paid": mo.fees_paid,
             "opportunity_cost_cents": mo.opportunity_cost,
             "early_receipt_value_cents": mo.early_receipt_value,
+            "other_costs_cents": mo.other_costs,
             "net_benefit": mo.net_benefit,
             "opening_cents": mo.opening_cents,
             "closing_cents": mo.closing_cents,
         }
         for mo in m.merchants
     }
+    losses = [p for p in parties if benefits[p]["net_benefit"] < 0]
 
-    baselines = run_baselines(net)
-    plan_face = Fraction(m.on_time_face)
-    incremental = {
-        f"vs_{b.baseline_id}": _frac(plan_face - b.expected_on_time_face) for b in baselines
-    }
-
-    alts = []
-    focal_res = solve(net, SolveConfig(objective=Objective.FOCAL, allow_proposals=allow_proposals))
-    for name, s in (("network", sched), ("focal_merchant", focal_res.schedule), ("no_action", ())):
-        am = verify(net, s, allow_proposals=allow_proposals).metrics
-        alts.append(
-            {"name": name, "legs": [f"{x.option_id}@{x.slot}" for x in s], **_metrics_summary(am)}
-        )
-    for a in alts:
-        a["pareto"] = not any(
-            b is not a
-            and b["on_time_face_cents"] >= a["on_time_face_cents"]
-            and b["focal_net_cents"] >= a["focal_net_cents"]
-            and b["surplus_cents"] >= a["surplus_cents"]
-            and (b["on_time_face_cents"], b["focal_net_cents"], b["surplus_cents"])
-            != (a["on_time_face_cents"], a["focal_net_cents"], a["surplus_cents"])
-            for b in alts
-        )
-
-    binding = []
+    binding: list[dict[str, Any]] = []
     for mo in m.merchants:
         if mo.min_slack_cents == 0:
             binding.append(
@@ -283,6 +278,88 @@ def build_plan(
                 }
             )
     expires = min(deadlines) if deadlines else net.clock.start(len(net.clock) - 1)
+    return {
+        "expires_at": expires.isoformat(),
+        "selected_legs": selected,
+        "required_approvals": sorted(
+            approvals, key=lambda a: (a["leg_id"], a["merchant_id"], a["action"])
+        ),
+        "required_initial_capacity": [
+            {
+                "merchant_id": mo.merchant_id,
+                "cents": mo.existing_draw_cents,
+                "evidence_id": net.position(mo.merchant_id).evidence_id,
+            }
+            for mo in m.merchants
+            if mo.existing_draw_cents
+        ],
+        "merchant_benefits": benefits,
+        "economics": {
+            "participants": parties,
+            "all_participants_non_negative": not losses,
+            "modeled_losses": losses,
+            "note": ECONOMICS_NOTE,
+        },
+        "fees_cents": m.fees,
+        "gross_flow_cents": m.gross_flow,
+        "on_time_face_cents": m.on_time_face,
+        "downstream_face_cents": m.downstream_face,
+        "liquidity_dollar_days": str(m.liquidity_dollar_days),
+        "early_cash_cents": m.early_cash,
+        "discharged": {
+            "open_discharged_cents": m.discharged_open,
+            "cash_cents": m.discharged_cash,
+            "new_concession_cents": m.discharged_new_concession,
+            "on_time_open_discharged_cents": m.on_time_discharged_open,
+            "prior_cash_applied_excluded_cents": m.prior_cash_excluded,
+            "note": DISCHARGED_NOTE,
+        },
+        "binding_constraints": binding,
+    }
+
+
+def build_plan(
+    net: Network,
+    *,
+    allow_proposals: bool = False,
+    required: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    cfg = SolveConfig(allow_proposals=allow_proposals, required=frozenset(required))
+    res = solve(net, cfg)
+    sched = res.schedule
+    rep = verify(net, sched, allow_proposals=allow_proposals, required=cfg.required)
+    verified = rep.ok or res.status is SolverStatus.INFEASIBLE
+    sections = _verified_sections(net, sched, allow_proposals, rep)
+    selected = sections["selected_legs"]
+    focal = net.focal_merchant
+
+    baselines = run_baselines(net)
+    plan_face = Fraction(rep.metrics.on_time_face)
+    plan_disch = Fraction(rep.metrics.on_time_discharged_open)
+    incremental = {
+        f"vs_{b.baseline_id}": _frac(plan_face - b.expected_on_time_face) for b in baselines
+    }
+    incremental_discharged = {
+        f"vs_{b.baseline_id}": _frac(plan_disch - b.expected_on_time_discharged) for b in baselines
+    }
+
+    alts = []
+    focal_res = solve(net, SolveConfig(objective=Objective.FOCAL, allow_proposals=allow_proposals))
+    for name, s in (("network", sched), ("focal_merchant", focal_res.schedule), ("no_action", ())):
+        am = verify(net, s, allow_proposals=allow_proposals).metrics
+        alts.append(
+            {"name": name, "legs": [f"{x.option_id}@{x.slot}" for x in s], **_metrics_summary(am)}
+        )
+    for a in alts:
+        a["pareto"] = not any(
+            b is not a
+            and b["on_time_face_cents"] >= a["on_time_face_cents"]
+            and b["focal_net_cents"] >= a["focal_net_cents"]
+            and b["surplus_cents"] >= a["surplus_cents"]
+            and (b["on_time_face_cents"], b["focal_net_cents"], b["surplus_cents"])
+            != (a["on_time_face_cents"], a["focal_net_cents"], a["surplus_cents"])
+            for b in alts
+        )
 
     reasons: list[str] = []
     min_liq = None
@@ -291,11 +368,9 @@ def build_plan(
         ml = minimum_liquidity(net, cfg.required, funding, allow_proposals=allow_proposals)
         if ml.status is SolverStatus.OPTIMAL:
             probe = verify(net, ml.schedule, allow_proposals=allow_proposals, required=cfg.required)
-            short = sorted({v.merchant for v in probe.violations if v.code == "CAPACITY"})
+            short = sorted({v.merchant for v in probe.violations if v.code == "CAPACITY"} - {None})
             reasons.extend(v.detail for v in probe.violations if v.code == "CAPACITY")
             for mm in short:
-                if mm is None:
-                    continue
                 pos = net.position(mm)
                 for b in pos.blocked:
                     reasons.append(
@@ -324,8 +399,10 @@ def build_plan(
         warnings.append("DOWNSTREAM_NOT_PROVIDER_VERIFIED")
     if any(x["terms"] == TermsKind.NEGOTIATED_PROPOSAL.value for x in selected):
         warnings.append("NEGOTIATED_CHANGE_ASSUMED_APPROVED")
-    if approvals:
+    if selected:
         warnings.append("APPROVALS_ARE_SYNTHETIC_ASSUMPTIONS")
+    for mm in sections["economics"]["modeled_losses"]:
+        warnings.append(f"MODELED_NET_LOSS:{mm}")
     if not verified:
         warnings.append("REJECTED_BY_VERIFIER")
     warnings.append("SIMULATED_NOT_EXECUTABLE")
@@ -352,7 +429,6 @@ def build_plan(
         "focal_merchant": focal,
         "currency": USD,
         "as_of": net.as_of.isoformat(),
-        "expires_at": expires.isoformat(),
         "config": {"allow_proposals": allow_proposals, "required": sorted(cfg.required)},
         "solver": {
             "name": SOLVER_NAME,
@@ -370,22 +446,15 @@ def build_plan(
             "ok": rep.ok,
             "violations": [f"{v.code}: {v.detail}" for v in rep.violations],
         },
-        "selected_legs": selected,
+        **sections,
         "rejected_legs": _rejected(net, sched, allow_proposals),
-        "required_initial_capacity": draws,
-        "merchant_benefits": benefits,
-        "fees_cents": m.fees,
-        "gross_flow_cents": m.gross_flow,
-        "on_time_face_cents": m.on_time_face,
-        "downstream_face_cents": m.downstream_face,
-        "liquidity_dollar_days": str(m.liquidity_dollar_days),
-        "early_cash_cents": m.early_cash,
         "availability_assumptions": assumptions,
         "baselines": [
             {
                 "baseline_id": b.baseline_id,
                 "name": b.name,
                 "expected_on_time_face_cents": _frac(b.expected_on_time_face),
+                "expected_on_time_discharged_cents": _frac(b.expected_on_time_discharged),
                 "expected_gross_flow_cents": _frac(b.expected_gross_flow),
                 "expected_focal_net_cents": _frac(b.expected_focal_net),
                 "outcomes_considered": b.outcomes_considered,
@@ -395,21 +464,19 @@ def build_plan(
             for b in baselines
         ],
         "incremental_on_time_face_cents": incremental,
-        "binding_constraints": binding,
+        "incremental_on_time_discharged_cents": incremental_discharged,
         "infeasibility_reasons": reasons,
-        "required_approvals": sorted(
-            approvals, key=lambda a: (a["leg_id"], a["merchant_id"], a["action"])
-        ),
         "alternatives": alts,
         "minimum_liquidity": min_liq,
         "warnings": warnings,
+        "integrity": INTEGRITY,
         "execution": {
             "may_execute": False,
             "reason": "SIMULATED: synthetic network and assumed approvals. The planner never "
             "issues a payment, alters an invoice or records a merchant approval.",
         },
     }
-    record["plan_id"] = "plan_" + _digest(record)[:16]
+    record["plan_id"] = content_id(record)
     return record
 
 
@@ -456,58 +523,90 @@ def merchant_view(record: dict[str, Any], merchant_id: str) -> dict[str, Any]:
     }
 
 
+def _diff_legs(recorded: Any, derived: list[dict[str, Any]]) -> list[str]:
+    if not isinstance(recorded, list) or len(recorded) != len(derived):
+        return ["selected_legs: number of legs differs from the replay"]
+    out = []
+    for got, want in zip(recorded, derived, strict=True):
+        keys = sorted(set(got) | set(want)) if isinstance(got, dict) else ["<leg>"]
+        bad = [k for k in keys if not isinstance(got, dict) or got.get(k) != want.get(k)]
+        if bad:
+            out.append(f"selected_legs[{want['leg_id']}]: {', '.join(bad)} differ from the replay")
+    return out
+
+
 def verify_plan_record(net: Network, record: dict[str, Any]) -> list[str]:
-    """Re-check a stored plan record against the network with the verifier."""
+    """Check a stored plan record against the immutable network it claims to describe.
+
+    1. Content checksum: `plan_id` must equal `content_id(record)`. This only shows the
+       record is internally consistent; anyone can recompute it, so it proves nothing
+       about who made the record.
+    2. Hard invariants: SIMULATED, never executable, the integrity statement unchanged.
+    3. Independent re-derivation: the record's own schedule is replayed by the verifier
+       and every financial field (legs, amounts, slots, dependencies, approvals,
+       capacity, benefits, fees, flows, discharged amounts, expiry, binding constraints)
+       is recomputed from the network and compared.
+    4. Deterministic recomputation: the whole record is rebuilt from the network and
+       compared key by key (solver result, baselines, increments, alternatives,
+       rejected legs, warnings). A different-but-feasible schedule fails here.
+
+    An empty list means the record is exactly what this code derives from `net`. It is not
+    an authorization: execution must still reload current state and real approvals.
+    """
     problems: list[str] = []
-    allow = bool(record["config"]["allow_proposals"])
-    required = frozenset(record["config"]["required"])
-    if record.get("status") != "SIMULATED" or record["execution"]["may_execute"] is not False:
-        problems.append("a P2 plan must be SIMULATED and not executable")
-    if record["input_digest"] != _input_digest(net, allow, required):
+    try:
+        allow = bool(record["config"]["allow_proposals"])
+        required = frozenset(record["config"]["required"])
+        legs = list(record["selected_legs"])
+    except (KeyError, TypeError):
+        return ["record is missing its config or selected legs"]
+    if record.get("plan_id") != content_id(record):
+        problems.append("plan_id does not match the record contents (checksum mismatch)")
+    if record.get("status") != "SIMULATED":
+        problems.append("a P2 plan must have status SIMULATED")
+    if (record.get("execution") or {}).get("may_execute") is not False:
+        problems.append("a P2 plan must never be executable (execution.may_execute must be false)")
+    if "SIMULATED_NOT_EXECUTABLE" not in (record.get("warnings") or []):
+        problems.append("the SIMULATED_NOT_EXECUTABLE warning is missing")
+    if record.get("integrity") != INTEGRITY:
+        problems.append("the integrity statement was altered")
+    if record.get("input_digest") != _input_digest(net, allow, required):
         problems.append("input digest does not match this network")
-    legs = [x for x in record["selected_legs"] if net.has_option(x["leg_id"])]
-    if len(legs) != len(record["selected_legs"]):
-        problems.append("unknown leg in record")
-    sched = tuple(ScheduledLeg(x["leg_id"], int(x["slot"])) for x in legs)
+
+    known = [x for x in legs if isinstance(x, dict) and net.has_option(str(x.get("leg_id")))]
+    if len(known) != len(legs):
+        problems.append("selected_legs contains an unknown leg")
+    try:
+        sched = tuple(ScheduledLeg(x["leg_id"], int(x["slot"])) for x in known)
+    except (KeyError, TypeError, ValueError):
+        return [*problems, "selected_legs has malformed slots"]
+    if list(sched) != sorted(sched, key=lambda s: (s.slot, s.option_id)):
+        problems.append("selected_legs are not in (slot, leg) order")
+    sched = tuple(sorted(sched, key=lambda s: (s.slot, s.option_id)))
     rep = verify(net, sched, allow_proposals=allow, required=required)
-    if record["solver"]["status"] != SolverStatus.INFEASIBLE.value:
-        problems.extend(f"{v.code}: {v.detail}" for v in rep.violations)
-    reports = {r.leg_id: r for r in rep.metrics.legs}
-    for x in legs:
-        o = net.option(x["leg_id"])
-        r = reports.get(x["leg_id"])
-        expected = {
-            "amount_cents": o.cash.cents,
-            "concession_cents": o.concession.cents,
-            "payer_fee_cents": o.fee.payer_fee.cents,
-            "payee_fee_cents": o.fee.payee_fee.cents,
-            "payer": o.payer,
-            "payee": o.payee,
-            "obligation_id": o.obligation_id,
-            "revision_no": o.revision_no,
-        }
-        for k, v in expected.items():
-            if x.get(k) != v:
-                problems.append(f"{x['leg_id']}: {k} is {x.get(k)!r}, network says {v!r}")
-        if r is not None and x.get("usable_slot") != r.usable_slot:
-            problems.append(f"{x['leg_id']}: usable_slot mismatch")
-        slot_of = {y["leg_id"]: int(y["slot"]) for y in legs}
-        for d in x.get("depends_on", []):
-            ur = reports.get(d)
-            if ur is None or ur.usable_slot is None or ur.usable_slot > int(x["slot"]):
-                problems.append(f"{x['leg_id']}: depends on {d}, whose proceeds are not usable yet")
-            elif d not in slot_of:
-                problems.append(f"{x['leg_id']}: depends on unscheduled {d}")
-    draws = sorted(
-        (mo.merchant_id, mo.existing_draw_cents)
-        for mo in rep.metrics.merchants
-        if mo.existing_draw_cents
-    )
-    declared = sorted((d["merchant_id"], d["cents"]) for d in record["required_initial_capacity"])
-    if draws != declared:
-        problems.append(f"declared initial capacity {declared} != replayed {draws}")
-    if record["gross_flow_cents"] != rep.metrics.gross_flow:
-        problems.append("gross flow mismatch")
-    if record["on_time_face_cents"] != rep.metrics.on_time_face:
-        problems.append("on-time face mismatch")
+    status = (record.get("solver") or {}).get("status")
+    if status != SolverStatus.INFEASIBLE.value:
+        problems.extend(f"replay: {v.code}: {v.detail}" for v in rep.violations)
+        value = (record.get("solver") or {}).get("value")
+        if value != list(objective_value(rep.metrics, Objective.NETWORK)):
+            problems.append("solver.value does not match the objective of the replayed schedule")
+
+    derived = _verified_sections(net, sched, allow, rep)
+    reported = set()
+    for key, want in derived.items():
+        got = record.get(key)
+        if got == want:
+            continue
+        reported.add(key)
+        if key == "selected_legs":
+            problems.extend(_diff_legs(got, want))
+        else:
+            problems.append(f"{key} does not match the independent replay")
+
+    fresh = build_plan(net, allow_proposals=allow, required=required)
+    for key in sorted(set(fresh) | set(record)):
+        if key in ("plan_id",) or key in reported:
+            continue
+        if record.get(key) != fresh.get(key):
+            problems.append(f"{key} differs from the deterministic recomputation")
     return problems

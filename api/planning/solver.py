@@ -255,18 +255,23 @@ class _Search:
             extra < pp.min_early_discount.cents or extra - cost < pp.min_net_benefit_cents
         ):
             return None  # the payer's own rule: paying early must be worth it to the payer
+        affected = extra > 0 or early > 0
+        rcost = pe.receipt_cost_cents if affected else 0
+        floor = pe.min_receipt_net_benefit_cents
+        if affected and floor is not None and value - extra - o.fee.payee_fee.cents - rcost < floor:
+            return None  # the payee's own rule: changed terms must be worth it to the payee
         focal = net.focal_merchant
         mine = 0
         if o.payer == focal:
             mine += extra - cost - o.fee.payer_fee.cents
         if o.payee == focal:
-            mine += -extra + value - o.fee.payee_fee.cents
+            mine += -extra + value - o.fee.payee_fee.cents - rcost
         lead = mine if self.cfg.objective is Objective.FOCAL else 0
         contrib = (
             lead,
             0,
             e.face.cents if on_time else 0,
-            value - cost,
+            value - cost - rcost,
             -(debit if early else 0),
             -(debit * early),
             -(o.fee.payer_fee.cents + o.fee.payee_fee.cents),

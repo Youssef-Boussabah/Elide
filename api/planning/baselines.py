@@ -44,6 +44,7 @@ class BaselineResult:
     expected_on_time_face: Fraction
     expected_gross_flow: Fraction
     expected_focal_net: Fraction
+    expected_on_time_discharged: Fraction  # outstanding value discharged on time
     outcomes_considered: int
     notes: tuple[str, ...]
     solver_status: str | None = None
@@ -122,6 +123,7 @@ def _single(bid: str, name: str, net: Network, sched, notes, status=None) -> Bas
         Fraction(m.on_time_face),
         Fraction(m.gross_flow),
         Fraction(m.focal_net),
+        Fraction(m.on_time_discharged_open),
         1,
         tuple(notes),
         status,
@@ -184,6 +186,7 @@ def run_baselines(net: Network) -> tuple[BaselineResult, ...]:
             Fraction(sum(m.on_time_face for m in ms), k),
             Fraction(sum(m.gross_flow for m in ms), k),
             Fraction(sum(m.focal_net for m in ms), k),
+            Fraction(sum(m.on_time_discharged_open for m in ms), k),
             k,
             (f"exact expectation over {k} equally likely tied buyer choice(s)",),
         )

@@ -89,6 +89,24 @@ def canonical() -> list[dict]:
             frozenset({"food_001", "freight_001"}),
         ),
         ("E CAD settlement credit", fx.network_cad_settlement(), False, frozenset({"freight_001"})),
+        (
+            "G positive-sum example (CONSTRUCTED, disclosed assumptions)",
+            fx.network_positive_sum(),
+            False,
+            frozenset(),
+        ),
+        (
+            "H invoice partially paid before planning",
+            fx.network_partially_paid(),
+            False,
+            frozenset(),
+        ),
+        (
+            "I timing matters (CONSTRUCTED, not representative)",
+            fx.network_timing_matters(),
+            False,
+            frozenset(),
+        ),
     ]
     for name, net, proposals, required in cases:
         r = solve(net, SolveConfig(allow_proposals=proposals, required=required))
@@ -104,6 +122,13 @@ def canonical() -> list[dict]:
             "gross_flow_cents": rep.metrics.gross_flow,
             "downstream_face_cents": rep.metrics.downstream_face,
             "focal_net_cents": rep.metrics.focal_net,
+            "open_discharged_cents": rep.metrics.discharged_open,
+            "prior_cash_excluded_cents": rep.metrics.prior_cash_excluded,
+            "net_benefit_by_participant": {
+                o.merchant_id: o.net_benefit
+                for o in rep.metrics.merchants
+                if any(o.merchant_id in (x.payer, x.payee) for x in rep.metrics.legs)
+            },
         }
         if not required:
             row["baselines"] = {
@@ -167,6 +192,10 @@ def benchmark(seeds: int) -> dict:
                     **{f"{k}_on_time": float(v.expected_on_time_face) for k, v in res.items()},
                     **{f"{k}_gross": float(v.expected_gross_flow) for k, v in res.items()},
                     **{f"{k}_focal_net": float(v.expected_focal_net) for k, v in res.items()},
+                    **{
+                        f"{k}_discharged": float(v.expected_on_time_discharged)
+                        for k, v in res.items()
+                    },
                 }
             )
     agree = checked = 0
@@ -196,6 +225,10 @@ def benchmark(seeds: int) -> dict:
             "B4_minus_B2": dist(col("B4_on_time", "B2_on_time")),
             "B4_minus_B3": dist(col("B4_on_time", "B3_on_time")),
             "B5_minus_B4": dist(col("B5_on_time", "B4_on_time")),
+        },
+        "lift_on_time_discharged_cents": {
+            "B4_minus_B1": dist(col("B4_discharged", "B1_discharged")),
+            "B4_minus_B3": dist(col("B4_discharged", "B3_discharged")),
         },
         "gross_flow_minus_on_time_B4_cents": dist(col("B4_gross", "B4_on_time")),
         "buyer_net_benefit_cents": {
@@ -250,6 +283,23 @@ def summary(doc: dict) -> str:
                 f"- {r['scenario']}: {r['status']}, existing "
                 f"{r.get('existing_cents', {})}, hypothetical {r['hypothetical_cents']}"
             )
+    lb = b["lift_on_time_cents"]
+    bn = b["buyer_net_benefit_cents"]["B4_minus_B2"]
+    lines += [
+        "",
+        "## Headline findings (read these first)",
+        "",
+        f"- B4 beats earliest-due-first (B1) in only {lb['B4_minus_B1']['positive_fraction']:.0%} "
+        "of generated networks.",
+        f"- B4 beats the random tie-break buyer baseline (B3) in "
+        f"{lb['B4_minus_B3']['positive_fraction']:.0%}.",
+        "- The negotiated change (B5) improves on B4 in "
+        f"{lb['B5_minus_B4']['positive_fraction']:.0%}.",
+        f"- Under B4 the buyer's modeled net benefit is below its own best plan (B2) in "
+        f"{bn['negative_fraction']:.0%} of networks.",
+        "- Constructed examples (G, I) show mechanisms; they are not representative.",
+        "- In the canonical scenario the supplier's modeled net benefit is -$10.00: not a win-win.",
+    ]
     lines += [
         "",
         f"## Seeded synthetic networks ({b['networks']} networks: {len(b['families'])} families "
@@ -261,10 +311,12 @@ def summary(doc: dict) -> str:
         "| Comparison | median | p25 | p75 | p5 | p95 | mean | zero | negative | positive |",
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
-    for k, d in {
+    rows = {
         **b["lift_on_time_cents"],
+        **{f"discharged {k}": v for k, v in b.get("lift_on_time_discharged_cents", {}).items()},
         **{f"buyer net {k}": v for k, v in b["buyer_net_benefit_cents"].items()},
-    }.items():
+    }
+    for k, d in rows.items():
         lines.append(
             f"| {k} | {d['median']:.0f} | {d['p25']:.0f} | {d['p75']:.0f} | {d['p5']:.0f} | "
             f"{d['p95']:.0f} | {d['mean']:.0f} | {d['zero_fraction']:.0%} | "
@@ -286,6 +338,16 @@ def summary(doc: dict) -> str:
         "Buyer net benefit can be lower under B4 than under B2: the network plan is shown",
         "next to the buyer's own best plan and the buyer's minimum benefit is still enforced.",
     ]
+    if doc.get("reproduces"):
+        r = doc["reproduces"]
+        lines += [
+            "",
+            "## Reproducibility",
+            "",
+            f"Original-face results reproduced against `{r['reference']}`: "
+            f"{r['identical_networks']} / {r['networks']} networks identical on every B0-B5 "
+            "on-time face, gross flow and buyer net benefit value.",
+        ]
     return "\n".join(lines) + "\n"
 
 
@@ -293,6 +355,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", type=int, default=40)
     ap.add_argument("--out", default=str(ROOT / "evidence" / "phase2"))
+    ap.add_argument("--tag", default="", help="suffix for the output file names")
+    ap.add_argument("--compare", default="", help="earlier JSON whose face results must match")
     args = ap.parse_args()
     import subprocess
 
@@ -313,9 +377,20 @@ def main() -> int:
         "canonical": canonical(),
         "benchmark": benchmark(args.seeds),
     }
+    if args.compare:
+        ref = json.loads(Path(args.compare).read_text("utf-8"))["benchmark"]["per_network"]
+        keys = [k for k in ref[0] if k.endswith(("_on_time", "_gross", "_focal_net"))]
+        new = {(n["family"], n["seed"]): n for n in doc["benchmark"]["per_network"]}
+        same = sum(all(new[(r["family"], r["seed"])][k] == r[k] for k in keys) for r in ref)
+        doc["reproduces"] = {
+            "reference": Path(args.compare).name,
+            "networks": len(ref),
+            "identical_networks": same,
+            "fields": keys,
+        }
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    stem = out / f"planner_benchmark_{now.date().isoformat()}"
+    stem = out / f"planner_benchmark_{now.date().isoformat()}{args.tag}"
     stem.with_suffix(".json").write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n", "utf-8")
     stem.with_suffix(".md").write_text(summary(doc), "utf-8")
     print(summary(doc))
