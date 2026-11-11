@@ -4,6 +4,12 @@ A PayPal capture is provider confirmation, so it becomes an `IncomingReceipt` wi
 PROVIDER_CONFIRMED: zero deployable capacity until the merchant's usable balance is
 separately verified (D006). If the credit is not USD it can never become USD capacity at
 all (D008); `usd_capacity_effect` states which rule blocks it.
+
+There is deliberately no function that turns a settlement into an available receipt.
+Becoming AVAILABLE_VERIFIED requires `capacity.mark_available` with `AvailabilityEvidence`
+(a merchant attestation of its own funds, or an independently fetched available-balance
+check) whose reference differs from the capture/invoice evidence; citing the payment
+confirmation itself is refused. No balance check is implemented yet (P5).
 """
 
 from __future__ import annotations

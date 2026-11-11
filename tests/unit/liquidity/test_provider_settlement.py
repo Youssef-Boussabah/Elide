@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from api.domain.invoice import Provenance, SourceKind
 from api.domain.money import CAD, USD, ExchangeRate, Money
 from api.domain.settlement import (
     DisputedTimestampError,
@@ -76,7 +77,9 @@ def test_cad_settlement_never_becomes_usd_capacity(settlement):
         EvidenceKind.MERCHANT_ATTESTED,
         settlement.ordering_time(),
         datetime(2026, 11, 11, tzinfo=UTC),
-        settlement.provenance,
+        Provenance(
+            SourceKind.MERCHANT_ATTESTED, "unit-test attestation", settlement.ordering_time()
+        ),
     )
     snap = compute_capacity(ev, receipts=[rcpt], at=datetime(2026, 11, 10, 23, tzinfo=UTC))
     assert snap.deployable == Money(0, USD)

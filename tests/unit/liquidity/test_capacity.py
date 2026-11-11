@@ -7,6 +7,8 @@ import pytest
 from api.domain.invoice import Provenance, SourceKind
 from api.domain.money import CAD, USD, CurrencyMismatchError, Money
 from api.liquidity.capacity import (
+    AvailabilityBasis,
+    AvailabilityEvidence,
     CapacityError,
     CapacityEvidence,
     CapacityStatus,
@@ -24,6 +26,7 @@ from api.liquidity.capacity import (
 T0 = datetime(2026, 11, 10, 15, 0, tzinfo=UTC)
 NOW = T0 + timedelta(minutes=30)
 PROV = Provenance(SourceKind.MERCHANT_ATTESTED, "unit-test", T0)
+SYN = Provenance(SourceKind.SYNTHETIC_FIXTURE, "unit-test fixture", T0)
 
 
 def usd(c):
@@ -39,7 +42,7 @@ def ev(spendable=149000, reserve=50000, kind=EvidenceKind.MERCHANT_ATTESTED, cur
         kind=kind,
         observed_at=kw.pop("observed_at", T0),
         valid_until=kw.pop("valid_until", T0 + timedelta(hours=1)),
-        provenance=PROV,
+        provenance=kw.pop("provenance", PROV),
         **kw,
     )
 
@@ -49,7 +52,14 @@ def commit(cid, cents, plan="plan_a", merchant="buyer"):
 
 
 def receipt(rid, cents, status, available_at=None, cur=USD):
-    return IncomingReceipt(rid, "buyer", Money(cents, cur), status, PROV, available_at)
+    availability = None
+    if status is ReceiptStatus.AVAILABLE_VERIFIED:  # merchant's own attestation (test value)
+        availability = AvailabilityEvidence(
+            AvailabilityBasis.MERCHANT_ATTESTED, f"attestation:{rid}", available_at, "buyer"
+        )
+    return IncomingReceipt(
+        rid, "buyer", Money(cents, cur), status, PROV, available_at, availability
+    )
 
 
 # --- core relationship -----------------------------------------------------------------
@@ -100,10 +110,12 @@ def test_unknown_evidence_deploys_zero():
 
 
 def test_synthetic_evidence_only_in_explicit_simulation():
-    assert compute_capacity(ev(kind=EvidenceKind.SYNTHETIC), at=NOW).status is (
+    assert compute_capacity(ev(kind=EvidenceKind.SYNTHETIC, provenance=SYN), at=NOW).status is (
         CapacityStatus.UNVERIFIED
     )
-    sim = compute_capacity(ev(kind=EvidenceKind.SYNTHETIC), at=NOW, allow_synthetic=True)
+    sim = compute_capacity(
+        ev(kind=EvidenceKind.SYNTHETIC, provenance=SYN), at=NOW, allow_synthetic=True
+    )
     assert sim.deployable == usd(99000)
     assert any("SYNTHETIC" in r for r in sim.reasons)
 

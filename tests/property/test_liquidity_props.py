@@ -9,6 +9,8 @@ from hypothesis import strategies as st
 from api.domain.invoice import Provenance, SourceKind
 from api.domain.money import USD, Money
 from api.liquidity.capacity import (
+    AvailabilityBasis,
+    AvailabilityEvidence,
     CapacityEvidence,
     CapacityStatus,
     Commitment,
@@ -23,7 +25,7 @@ from api.liquidity.simulation import ReserveViolationError, Transfer, simulate
 
 T0 = datetime(2026, 11, 10, tzinfo=UTC)
 NOW = T0 + timedelta(minutes=10)
-PROV = Provenance(SourceKind.SYNTHETIC_FIXTURE, "property-test", T0)
+PROV = Provenance(SourceKind.MERCHANT_ATTESTED, "property-test attestation", T0)
 amt = st.integers(0, 10**9)
 
 
@@ -65,6 +67,9 @@ def test_only_verified_available_receipts_ever_add_capacity(spendable, reserve, 
             status,
             PROV,
             T0 if status is ReceiptStatus.AVAILABLE_VERIFIED else None,
+            AvailabilityEvidence(AvailabilityBasis.MERCHANT_ATTESTED, f"att:{i}", T0, "m")
+            if status is ReceiptStatus.AVAILABLE_VERIFIED
+            else None,
         )
         for i, (a, status) in enumerate(receipts)
     ]

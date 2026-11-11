@@ -9,21 +9,34 @@ Rules (doc 04/05, D006, D008):
 - Evidence counts only inside its validity window [observed_at, valid_until). Stale,
   future-dated, unknown-kind and (unless simulating) synthetic evidence deploy zero.
 - Held, pending, promised and provider-confirmed (e.g. PayPal `PAID`) receipts add zero.
-  A receipt adds capacity only if it is AVAILABLE_VERIFIED, available strictly before the
-  instant being evaluated (no same-slot reuse), and not already included in the evidence.
+  A receipt adds capacity only if it is AVAILABLE_VERIFIED **with separate availability
+  evidence** (`AvailabilityEvidence`), usable strictly before the instant being evaluated
+  (no same-slot reuse), and not already included in the evidence's observed balance.
+  The status value alone proves nothing: synthetic availability counts only in explicit
+  simulations, a merchant can attest only its own funds, and the availability evidence
+  must be a different artifact from the payment confirmation that created the receipt.
+- One economic receipt counts at most once. Receipts are keyed by (merchant, receipt_id);
+  identical copies collapse, and two different records for the same receipt (other
+  amount, currency, status or evidence) raise `ReceiptConflictError`: the caller must
+  supply the receipt's current state once (a held -> verified transition replaces the
+  record, it never adds a second receipt).
 - Every active commitment of the merchant is subtracted once; a duplicate commitment id
   is an error, so two plans cannot count the same cash twice.
 - A negative raw capacity is reported as a deficit, never hidden by the max().
+- Evidence supersession (`select_current_evidence`): for one merchant and currency, the
+  latest observation at or before the evaluated instant is authoritative. An older
+  snapshot is superseded even if its validity window is still open, so a caller cannot
+  bypass a newer, lower balance by naming an older evidence id.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 
-from api.domain.invoice import Provenance, check_aware, check_id
+from api.domain.invoice import Provenance, SourceKind, check_aware, check_id
 from api.domain.money import (
     SPENDABLE_CURRENCIES,
     USD,
@@ -44,6 +57,18 @@ class InsufficientCapacityError(CapacityError):
     pass
 
 
+class ReceiptConflictError(CapacityError):
+    """The same receipt was supplied twice with different content."""
+
+
+class EvidenceConflictError(CapacityError):
+    """Two different evidence records claim the same identity or observation instant."""
+
+
+class SupersededEvidenceError(CapacityError):
+    """A newer observation of the same balance exists; the older one may not be used."""
+
+
 class EvidenceKind(StrEnum):
     PROVIDER_VERIFIED = "provider_verified"
     MERCHANT_ATTESTED = "merchant_attested"
@@ -51,11 +76,31 @@ class EvidenceKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+# Which provenance sources may back each evidence kind. Synthetic data is only ever
+# SYNTHETIC; a merchant-entered (unattested) figure can only be UNKNOWN.
+_EVIDENCE_SOURCES: dict[EvidenceKind, frozenset[SourceKind]] = {
+    EvidenceKind.PROVIDER_VERIFIED: frozenset({SourceKind.PAYPAL_SANDBOX}),
+    EvidenceKind.MERCHANT_ATTESTED: frozenset({SourceKind.MERCHANT_ATTESTED}),
+    EvidenceKind.SYNTHETIC: frozenset({SourceKind.SYNTHETIC_FIXTURE}),
+    EvidenceKind.UNKNOWN: frozenset(
+        {SourceKind.MERCHANT_ENTERED, SourceKind.MERCHANT_ATTESTED, SourceKind.PAYPAL_SANDBOX}
+    ),
+}
+
+
 class ReceiptStatus(StrEnum):
     PROMISED = "promised"  # invoice or promise, nothing received
     PROVIDER_CONFIRMED = "provider_confirmed"  # e.g. PayPal invoice PAID (D006: not usable)
     HELD = "held"
-    AVAILABLE_VERIFIED = "available_verified"  # separately verified as usable
+    AVAILABLE_VERIFIED = "available_verified"  # needs AvailabilityEvidence to count
+
+
+class AvailabilityBasis(StrEnum):
+    """Why a receipt is considered usable. Never derived from a payment status."""
+
+    SYNTHETIC = "synthetic"  # simulation only (allow_synthetic=True)
+    MERCHANT_ATTESTED = "merchant_attested"  # the receiving merchant attests its own funds
+    PROVIDER_BALANCE = "provider_balance"  # independently fetched available-balance check
 
 
 class CapacityStatus(StrEnum):
@@ -86,6 +131,14 @@ class CapacityEvidence:
         check_id(self.merchant_id, "merchant_id")
         if not isinstance(self.kind, EvidenceKind):
             raise CapacityError(f"invalid evidence kind {self.kind!r}")
+        if self.provenance.source not in _EVIDENCE_SOURCES[self.kind]:
+            raise CapacityError(
+                f"{self.kind.value} evidence cannot come from {self.provenance.source.value}"
+            )
+        if not isinstance(self.included_receipt_ids, frozenset):
+            raise CapacityError("included_receipt_ids must be a frozenset")
+        for rid in self.included_receipt_ids:
+            check_id(rid, "included receipt_id")
         check_aware(self.observed_at, "observed_at")
         check_aware(self.valid_until, "valid_until")
         if self.valid_until <= self.observed_at:
@@ -103,6 +156,27 @@ class CapacityEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class AvailabilityEvidence:
+    """The separate proof that a received amount is usable (doc 05, D006)."""
+
+    basis: AvailabilityBasis
+    evidence_ref: str
+    verified_at: datetime
+    attested_by: str | None = None  # the attesting merchant, for MERCHANT_ATTESTED
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.basis, AvailabilityBasis):
+            raise CapacityError(f"invalid availability basis {self.basis!r}")
+        if not isinstance(self.evidence_ref, str) or not self.evidence_ref.strip():
+            raise CapacityError("availability evidence needs an evidence_ref")
+        check_aware(self.verified_at, "verified_at")
+        if (self.basis is AvailabilityBasis.MERCHANT_ATTESTED) != (self.attested_by is not None):
+            raise CapacityError("attested_by is required exactly for merchant attestations")
+        if self.attested_by is not None:
+            check_id(self.attested_by, "attested_by")
+
+
+@dataclass(frozen=True, slots=True)
 class IncomingReceipt:
     receipt_id: str
     merchant_id: str
@@ -110,6 +184,7 @@ class IncomingReceipt:
     status: ReceiptStatus
     provenance: Provenance
     available_at: datetime | None = None
+    availability: AvailabilityEvidence | None = None
 
     def __post_init__(self) -> None:
         check_id(self.receipt_id, "receipt_id")
@@ -118,8 +193,53 @@ class IncomingReceipt:
             raise CapacityError(f"invalid receipt status {self.status!r}")
         if self.available_at is not None:
             check_aware(self.available_at, "available_at")
-        if self.status is ReceiptStatus.AVAILABLE_VERIFIED and self.available_at is None:
-            raise CapacityError("a verified-available receipt needs available_at")
+        verified = self.status is ReceiptStatus.AVAILABLE_VERIFIED
+        if verified and (self.available_at is None or self.availability is None):
+            raise CapacityError(
+                "a verified-available receipt needs available_at and availability evidence"
+            )
+        if not verified and self.availability is not None:
+            raise CapacityError(f"a {self.status.value} receipt cannot carry availability")
+        a = self.availability
+        if a is None:
+            return
+        synthetic = self.provenance.is_synthetic
+        if synthetic != (a.basis is AvailabilityBasis.SYNTHETIC):
+            raise CapacityError("synthetic availability is only for synthetic receipts")
+        if a.basis is AvailabilityBasis.MERCHANT_ATTESTED and a.attested_by != self.merchant_id:
+            raise CapacityError("a merchant can attest only its own funds")
+        if not synthetic:
+            confirmation = {self.provenance.reference.strip()}
+            if self.provenance.evidence_ref:
+                confirmation |= {p.strip() for p in self.provenance.evidence_ref.split(";")}
+            if a.evidence_ref.strip() in confirmation:
+                raise CapacityError(
+                    "availability evidence must be separate from the payment confirmation (D006)"
+                )
+        if a.verified_at < self.available_at:  # type: ignore[operator]
+            raise CapacityError("availability cannot be verified before the funds are available")
+
+    @property
+    def usable_from(self) -> datetime | None:
+        """When the receipt may first fund an outflow (available and verified)."""
+        if self.availability is None or self.available_at is None:
+            return None
+        return max(self.available_at, self.availability.verified_at)
+
+
+def mark_available(
+    receipt: IncomingReceipt, availability: AvailabilityEvidence, available_at: datetime
+) -> IncomingReceipt:
+    """Explicit transition to AVAILABLE_VERIFIED. The result **replaces** the earlier
+    record of the same receipt; supplying both to `compute_capacity` is a conflict."""
+    if receipt.status is ReceiptStatus.AVAILABLE_VERIFIED:
+        raise CapacityError(f"receipt {receipt.receipt_id} is already verified available")
+    return replace(
+        receipt,
+        status=ReceiptStatus.AVAILABLE_VERIFIED,
+        available_at=available_at,
+        availability=availability,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +307,64 @@ def _unique_commitments(commitments: Iterable[Commitment], merchant_id: str) -> 
     return list(seen.values())
 
 
+def _unique_receipts(
+    receipts: Iterable[IncomingReceipt], merchant_id: str
+) -> list[IncomingReceipt]:
+    """One record per economic receipt of this merchant; identical copies collapse."""
+    seen: dict[str, IncomingReceipt] = {}
+    for r in receipts:
+        if r.merchant_id != merchant_id:
+            continue
+        prior = seen.get(r.receipt_id)
+        if prior is None:
+            seen[r.receipt_id] = r
+        elif prior != r:
+            raise ReceiptConflictError(
+                f"receipt {r.receipt_id} supplied twice with different content "
+                f"({prior.status.value} {prior.amount} vs {r.status.value} {r.amount}); "
+                "supply its current state once"
+            )
+    return list(seen.values())
+
+
+def select_current_evidence(
+    candidates: Iterable[CapacityEvidence], *, merchant_id: str, currency: str, at: datetime
+) -> CapacityEvidence | None:
+    """The authoritative observation of one merchant's balance in one currency at `at`:
+    the latest one observed at or before `at`. Older observations are superseded."""
+    check_aware(at, "at")
+    pool: dict[str, CapacityEvidence] = {}
+    for e in candidates:
+        if e.merchant_id == merchant_id and e.currency == currency and e.observed_at <= at:
+            if e.evidence_id in pool and pool[e.evidence_id] != e:
+                raise EvidenceConflictError(f"evidence {e.evidence_id} has two versions")
+            pool[e.evidence_id] = e
+    if not pool:
+        return None
+    latest = max(e.observed_at for e in pool.values())
+    top = [e for e in pool.values() if e.observed_at == latest]
+    if len(top) > 1:
+        ids = ", ".join(sorted(e.evidence_id for e in top))
+        raise EvidenceConflictError(f"observations {ids} have the same observed_at")
+    return top[0]
+
+
+def check_not_superseded(
+    evidence: CapacityEvidence, candidates: Iterable[CapacityEvidence], *, at: datetime
+) -> None:
+    """Raise if a newer observation of the same balance exists at `at`."""
+    if evidence.observed_at > at:
+        return  # not yet observed; compute_capacity reports NOT_YET_OBSERVED
+    current = select_current_evidence(
+        [evidence, *candidates], merchant_id=evidence.merchant_id, currency=evidence.currency, at=at
+    )
+    if current is not None and current.evidence_id != evidence.evidence_id:
+        raise SupersededEvidenceError(
+            f"evidence {evidence.evidence_id} is superseded by {current.evidence_id} "
+            f"(observed {current.observed_at.isoformat()})"
+        )
+
+
 def compute_capacity(
     evidence: CapacityEvidence,
     commitments: Iterable[Commitment] = (),
@@ -206,28 +384,36 @@ def compute_capacity(
     projected: list[ProjectedFunds] = []
     incoming = Money.zero(cur)
     latest_available: datetime | None = None
-    for r in receipts:
-        if r.merchant_id != evidence.merchant_id:
-            continue
+    synthetic_receipts = False
+    for r in _unique_receipts(receipts, evidence.merchant_id):
         if r.receipt_id in evidence.included_receipt_ids:
             continue  # already reflected in the observed balance
+        basis = r.availability.basis if r.availability else None
+        synthetic_blocked = basis is AvailabilityBasis.SYNTHETIC and not allow_synthetic
+        usable_from = r.usable_from
         usable = (
             r.status is ReceiptStatus.AVAILABLE_VERIFIED
             and r.amount.currency == cur
-            and r.available_at is not None
-            and r.available_at < at
+            and not synthetic_blocked
+            and usable_from is not None
+            and usable_from < at
         )
         if usable:
             incoming = incoming + r.amount
-            latest_available = max(filter(None, (latest_available, r.available_at)))
+            latest_available = max(filter(None, (latest_available, usable_from)))
+            synthetic_receipts |= basis is AvailabilityBasis.SYNTHETIC
         else:
             if r.amount.currency != cur:
                 why = f"{r.amount.currency} receipt cannot fund {cur} capacity"
             elif r.status is not ReceiptStatus.AVAILABLE_VERIFIED:
                 why = f"{r.status.value}: adds zero until separately verified available"
+            elif synthetic_blocked:
+                why = "synthetic availability counts only in an explicit simulation"
             else:
                 why = "not available before this instant (no same-slot reuse)"
             projected.append(ProjectedFunds(r.receipt_id, r.amount, r.status, r.available_at, why))
+    if synthetic_receipts:
+        reasons.append("includes SYNTHETIC receipts: simulation only")
 
     raw = (
         evidence.verified_spendable.cents

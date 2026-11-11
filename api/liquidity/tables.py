@@ -1,6 +1,7 @@
-"""SQLAlchemy Core tables for capacity evidence and commitments (see migration 0002)."""
+"""SQLAlchemy Core tables for capacity evidence and commitments (migrations 0002, 0003)."""
 
 from sqlalchemy import (
+    ARRAY,
     BigInteger,
     CheckConstraint,
     Column,
@@ -36,6 +37,13 @@ capacity_evidence = Table(
     Column("provenance_recorded_at", DateTime(timezone=True), nullable=False),
     Column("provenance_evidence_ref", Text),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=text("now()")),
+    # Receipt ids already reflected in this observed balance (0003). Sorted, immutable.
+    Column(
+        "included_receipt_ids",
+        ARRAY(String(80)),
+        nullable=False,
+        server_default=text("'{}'::varchar(80)[]"),
+    ),
     CheckConstraint("currency IN ('USD', 'CAD')", name="ck_capacity_evidence_currency"),
     CheckConstraint(
         "verified_spendable_cents >= 0 AND protected_reserve_cents >= 0 "
@@ -43,6 +51,18 @@ capacity_evidence = Table(
         name="ck_capacity_evidence_nonnegative",
     ),
     CheckConstraint("valid_until > observed_at", name="ck_capacity_evidence_window"),
+    CheckConstraint(
+        "array_position(included_receipt_ids, NULL) IS NULL",
+        name="ck_capacity_evidence_included_receipt_ids",
+    ),
+)
+# One observation of a merchant's balance per currency and instant (supersession order).
+Index(
+    "uq_capacity_evidence_observation",
+    capacity_evidence.c.merchant_id,
+    capacity_evidence.c.currency,
+    capacity_evidence.c.observed_at,
+    unique=True,
 )
 
 capacity_commitment = Table(

@@ -5,10 +5,20 @@ transaction-scoped advisory lock, reloads the evidence and all active commitment
 the pure `commit_capacity` check and inserts the commitment, all in one transaction. Two
 concurrent plans therefore cannot both count the same cash: the second one waits for the
 lock, then sees the first commitment.
+
+Evidence is immutable and round-trips exactly, including the receipt ids already
+reflected in the observed balance. Evidence selection: the caller names an evidence id,
+and the store refuses it (`SupersededEvidenceError`) if a newer observation of the same
+merchant's balance in the same currency exists at the evaluated instant
+(`select_current_evidence`). `current_evidence` returns the authoritative one.
+
+Incoming receipts are supplied by the caller (they are not persisted yet); they are
+de-duplicated and checked by the pure engine.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
 
 from sqlalchemy import Connection, Engine, func, select, text
@@ -23,9 +33,13 @@ from api.liquidity.capacity import (
     CapacitySnapshot,
     Commitment,
     DuplicateCommitmentError,
+    EvidenceConflictError,
     EvidenceKind,
+    IncomingReceipt,
+    check_not_superseded,
     commit_capacity,
     compute_capacity,
+    select_current_evidence,
 )
 from api.liquidity.tables import capacity_commitment, capacity_evidence
 
@@ -35,7 +49,9 @@ class EvidenceNotFoundError(CapacityError):
 
 
 def save_evidence(engine: Engine, ev: CapacityEvidence) -> None:
-    """Insert immutable evidence. Re-saving identical evidence is a no-op."""
+    """Insert immutable evidence. Re-saving identical evidence is a no-op; the same id with
+    other content, or another observation of the same balance at the same instant, raises
+    `EvidenceConflictError`."""
     values = {
         "evidence_id": ev.evidence_id,
         "merchant_id": ev.merchant_id,
@@ -51,16 +67,59 @@ def save_evidence(engine: Engine, ev: CapacityEvidence) -> None:
         "provenance_reference": ev.provenance.reference,
         "provenance_recorded_at": ev.provenance.recorded_at,
         "provenance_evidence_ref": ev.provenance.evidence_ref,
+        "included_receipt_ids": sorted(ev.included_receipt_ids),
     }
-    with engine.begin() as conn:
-        inserted = conn.execute(
-            insert(capacity_evidence)
-            .values(**values)
-            .on_conflict_do_nothing()
-            .returning(capacity_evidence.c.evidence_id)
-        ).first()
-        if inserted is None and _load_evidence(conn, ev.evidence_id) != ev:
-            raise CapacityError(f"evidence {ev.evidence_id} already exists with other values")
+    try:
+        with engine.begin() as conn:
+            inserted = conn.execute(
+                insert(capacity_evidence)
+                .values(**values)
+                .on_conflict_do_nothing(index_elements=["evidence_id"])
+                .returning(capacity_evidence.c.evidence_id)
+            ).first()
+            if inserted is None and _load_evidence(conn, ev.evidence_id) != ev:
+                raise EvidenceConflictError(
+                    f"evidence {ev.evidence_id} already exists with other values"
+                )
+    except IntegrityError as exc:
+        if "uq_capacity_evidence_observation" in str(exc.orig):
+            raise EvidenceConflictError(
+                f"{ev.merchant_id} already has a {ev.currency} observation at "
+                f"{ev.observed_at.isoformat()}"
+            ) from exc
+        raise
+
+
+def load_evidence(engine: Engine, evidence_id: str) -> CapacityEvidence:
+    with engine.connect() as conn:
+        return _load_evidence(conn, evidence_id)
+
+
+def current_evidence(
+    engine: Engine, merchant_id: str, currency: str, at: datetime
+) -> CapacityEvidence | None:
+    """The authoritative observation of this merchant's balance in `currency` at `at`."""
+    with engine.connect() as conn:
+        return _current_evidence(conn, merchant_id, currency, at)
+
+
+def _current_evidence(
+    conn: Connection, merchant_id: str, currency: str, at: datetime
+) -> CapacityEvidence | None:
+    c = capacity_evidence.c
+    ids = conn.execute(
+        select(c.evidence_id)
+        .where(c.merchant_id == merchant_id, c.currency == currency, c.observed_at <= at)
+        .order_by(c.observed_at.desc())
+        .limit(2)
+    ).scalars()
+    candidates = [_load_evidence(conn, i) for i in list(ids)]
+    return select_current_evidence(candidates, merchant_id=merchant_id, currency=currency, at=at)
+
+
+def _require_current(conn: Connection, ev: CapacityEvidence, at: datetime) -> None:
+    newest = _current_evidence(conn, ev.merchant_id, ev.currency, at)
+    check_not_superseded(ev, [] if newest is None else [newest], at=at)
 
 
 def _load_evidence(conn: Connection, evidence_id: str) -> CapacityEvidence:
@@ -86,6 +145,7 @@ def _load_evidence(conn: Connection, evidence_id: str) -> CapacityEvidence:
             r.provenance_recorded_at,
             r.provenance_evidence_ref,
         ),
+        included_receipt_ids=frozenset(r.included_receipt_ids),
     )
 
 
@@ -114,14 +174,23 @@ def reserve_capacity(
     evidence_id: str,
     commitment: Commitment,
     at: datetime,
+    receipts: Iterable[IncomingReceipt] = (),
     allow_synthetic: bool = False,
 ) -> Commitment:
     try:
         with engine.begin() as conn:
             _lock_merchant(conn, commitment.merchant_id)
             ev = _load_evidence(conn, evidence_id)
+            _require_current(conn, ev, at)
             existing = _active_commitments(conn, commitment.merchant_id)
-            commit_capacity(ev, existing, commitment, at=at, allow_synthetic=allow_synthetic)
+            commit_capacity(
+                ev,
+                existing,
+                commitment,
+                at=at,
+                receipts=tuple(receipts),
+                allow_synthetic=allow_synthetic,
+            )
             conn.execute(
                 capacity_commitment.insert().values(
                     commitment_id=commitment.commitment_id,
@@ -155,12 +224,22 @@ def release_capacity(engine: Engine, commitment_id: str, at: datetime) -> bool:
 
 
 def capacity_now(
-    engine: Engine, *, evidence_id: str, at: datetime, allow_synthetic: bool = False
+    engine: Engine,
+    *,
+    evidence_id: str,
+    at: datetime,
+    receipts: Iterable[IncomingReceipt] = (),
+    allow_synthetic: bool = False,
 ) -> CapacitySnapshot:
     with engine.connect() as conn:
         ev = _load_evidence(conn, evidence_id)
+        _require_current(conn, ev, at)
         return compute_capacity(
-            ev, _active_commitments(conn, ev.merchant_id), at=at, allow_synthetic=allow_synthetic
+            ev,
+            _active_commitments(conn, ev.merchant_id),
+            tuple(receipts),
+            at=at,
+            allow_synthetic=allow_synthetic,
         )
 
 
