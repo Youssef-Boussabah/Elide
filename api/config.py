@@ -18,7 +18,7 @@ class Settings(BaseSettings):
 
     app_env: Literal["local", "test", "ci"] = "local"
     database_url: str = Field(
-        default="postgresql+psycopg://elide:elide_local_dev_only@localhost:5433/elide",
+        default="postgresql+psycopg://elide:elide_local_dev_only@127.0.0.1:5433/elide",
         description="SQLAlchemy URL. Local dev default matches compose.yaml.",
     )
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]

@@ -5,6 +5,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine, pool
 
+import api.accounting.tables
+import api.liquidity.tables  # noqa: F401
 from api.config import get_settings
 from api.db import Base
 
@@ -27,7 +29,11 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    engine = create_engine(get_settings().database_url, poolclass=pool.NullPool)
+    engine = create_engine(
+        get_settings().database_url,
+        poolclass=pool.NullPool,
+        connect_args={"connect_timeout": 5},  # fail fast instead of hanging
+    )
     with engine.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

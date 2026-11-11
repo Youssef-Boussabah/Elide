@@ -11,7 +11,7 @@ from api.db import check_database
 
 pytestmark = pytest.mark.integration
 
-DEFAULT_URL = "postgresql+psycopg://elide:elide_local_dev_only@localhost:5433/elide"
+DEFAULT_URL = "postgresql+psycopg://elide:elide_local_dev_only@127.0.0.1:5433/elide"
 
 
 @pytest.fixture

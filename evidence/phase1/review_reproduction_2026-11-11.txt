@@ -1,0 +1,46 @@
+P1 architectural review: reproduction of findings before the fixes
+====================================================================
+Code under test: feat/p1-financial-kernel @ 91b81527a0d403c8f19429ba06177865f8d71708
+Date: 2026-11-11 (Windows 11, Python 3.12, PostgreSQL 16 at 127.0.0.1:5433)
+Evidence class: Synthetic-tested (test values), except the settlement record, which is
+built from the existing redacted Sandbox runs 20261110T221823Z / 20261110T221827Z.
+No PayPal call was made. The database checks ran in a throwaway database
+(elide_repro_<random>), created, migrated with Alembic and dropped.
+
+Pure-domain reproduction (scratch script, output verbatim):
+F1 duplicate $990 receipt -> verified_incoming USD 1980.00 deployable USD 1980.00
+F1 held+verified same id -> no error, incoming USD 990.00
+F3 synthetic receipt marked AVAILABLE_VERIFIED counts without other evidence: USD 990.00 (allow_synthetic=False)
+F3 paypal PAID receipt marked AVAILABLE_VERIFIED counts without other evidence: USD 990.00 (allow_synthetic=False)
+F4 rejected $5 offer later 'accepted' as $90 via supersedes=2 -> USD 90.00
+F5 local reversal evidence_class: sandbox_verified provider_ref: ProviderEventRef(provider='paypal', environment='sandbox', resource_type='capture', resource_id='4J016440MV5285528')
+
+PostgreSQL reproduction (throwaway database, output verbatim):
+F2 included_receipt_ids after round trip: set()
+F2 identical replay raised: CapacityError evidence ev1 already exists with other values
+F2 reserved USD 900.00 against OLDER ev1 although newer ev2 shows USD 10.00
+
+F6 (non-atomic bundle): settlement_entries() returned three entries that callers posted
+one by one with post_entry(), each in its own transaction; a crash after the first left
+the invoice booked without its capture. Regression test:
+tests/integration/test_review_remediation_db.py::test_interrupted_import_books_nothing_and_a_retry_completes
+
+F7 (terminology): the Phase 1 exit report said "every account balances to zero except the
+CAD balance". That was wrong: revenue, discount, fee and the FX conversion position keep
+balances. Only the receivable and the USD clearing account are zero.
+
+New regression tests run against the unfixed code (before any fix was applied):
+- test_revision_lifecycle.py, test_reversal_evidence.py, test_revision_props.py:
+  19 failed, 8 passed
+- test_receipt_identity_and_evidence.py, test_receipt_and_evidence_props.py,
+  test_review_remediation_db.py: could not be collected (the APIs they test did not
+  exist yet)
+
+Found while fixing F6 (pre-existing race in post_entry):
+test_concurrent_imports_book_the_bundle_once failed in 2 of 8 repeated runs with
+DuplicateProviderEventError("... resource_id='INV2-4RUV-XPEH-4F3C-T8BW') already has a
+invoice_issued entry") instead of returning DUPLICATE. ON CONFLICT targeted only the
+idempotency key, so a concurrent replay could hit the provider-event unique index first.
+No double posting occurred (the index refused it), but replays were not reliably
+idempotent. After the fix (every unique index is an arbiter): 15 of 15 repeated runs of
+the three concurrency tests passed.
