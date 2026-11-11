@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from api.app.demo_ai import router as demo_ai_router
 from api.config import get_settings
 from api.db import check_database
 
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
             content={"status": "ok", "database": "ok", "postgres_version": version, **flags}
         )
 
+    app.include_router(demo_ai_router)
     return app
 
 

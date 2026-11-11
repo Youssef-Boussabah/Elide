@@ -3,6 +3,7 @@
 Secrets are held as `SecretStr` so they are never printed by repr/logging.
 """
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 
@@ -29,10 +30,15 @@ class Settings(BaseSettings):
     paypal_sandbox_payer_email: SecretStr | None = None
     paypal_webhook_id: SecretStr | None = None
 
-    # LLM adapter: provider/model chosen later (open question 9). No payment tools.
+    # LLM adapter (P3): an OpenAI-compatible provider, e.g. LLM_PROVIDER=nebius. Structured
+    # JSON output only; the model gets no tools and no payment access.
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_api_key: SecretStr | None = None
+    llm_base_url: str | None = None
+    llm_price_input_per_m: Decimal | None = None  # USD per 1M tokens, for the spend cap
+    llm_price_output_per_m: Decimal | None = None
+    llm_spend_cap_usd: Decimal = Decimal("10.00")  # owner-authorized P3 budget
 
     @field_validator(
         "paypal_client_id",
@@ -40,6 +46,9 @@ class Settings(BaseSettings):
         "paypal_sandbox_payer_email",
         "paypal_webhook_id",
         "llm_api_key",
+        "llm_provider",
+        "llm_model",
+        "llm_base_url",
         mode="before",
     )
     @classmethod
@@ -48,6 +57,16 @@ class Settings(BaseSettings):
         if isinstance(v, str) and (not v.strip() or v.startswith(PLACEHOLDER_PREFIX)):
             return None
         return v
+
+    @field_validator("llm_price_input_per_m", "llm_price_output_per_m", mode="before")
+    @classmethod
+    def _blank_price_is_unset(cls, v: object) -> object:
+        return None if isinstance(v, str) and not v.strip() else v
+
+    @field_validator("llm_spend_cap_usd", mode="before")
+    @classmethod
+    def _blank_cap_is_default(cls, v: object) -> object:
+        return Decimal("10.00") if isinstance(v, str) and not v.strip() else v
 
     @property
     def paypal_configured(self) -> bool:
