@@ -49,6 +49,20 @@ class SpendLockError(LLMUnavailableError):
     pass
 
 
+class UnknownReservationError(RuntimeError):
+    """Settling a reservation id this ledger never issued."""
+
+
+class ReservationConflictError(RuntimeError):
+    """Settling an already-settled reservation differently (e.g. commit after release, or a
+    second commit with another cost). Repeating the same settlement is a no-op."""
+
+
+class BudgetExceededError(SpendCapExceededError):
+    """Committed spend passed the cap (actual usage above the estimate). New reservations
+    are refused until an operator acknowledges the overage with a reason."""
+
+
 @dataclass(frozen=True, slots=True)
 class Prices:
     """USD per one million tokens."""
@@ -138,6 +152,11 @@ class SpendGuard:
             raise ValueError("a reservation must be positive")
         with self._locked():
             data = self._load()
+            if data.get("exceeded") and not data.get("overage_acknowledged"):
+                raise BudgetExceededError(
+                    "committed spend exceeded the cap; an operator must acknowledge the "
+                    "overage before any further call"
+                )
             committed = Decimal(data["total_usd"])
             held = sum((Decimal(v) for v in data["reserved"].values()), Decimal(0))
             if committed + held + estimate > self.cap:
@@ -160,14 +179,29 @@ class SpendGuard:
         tokens: tuple[int, int],
         note: str = "",
     ) -> Decimal:
+        """Settle a reservation at the usage-based cost. Idempotent per reservation id."""
+        rid = reservation.reservation_id
         with self._locked():
             data = self._load()
-            data["reserved"].pop(reservation.reservation_id, None)
+            settled = data.setdefault("settled", {})
+            if rid in settled:
+                prev = settled[rid]
+                if prev == {"status": "committed", "cost": str(cost)}:
+                    return Decimal(data["total_usd"])
+                raise ReservationConflictError(f"reservation {rid} already settled: {prev}")
+            if rid not in data["reserved"]:
+                raise UnknownReservationError(f"unknown reservation {rid}")
+            data["reserved"].pop(rid)
+            settled[rid] = {"status": "committed", "cost": str(cost)}
             total = Decimal(data["total_usd"]) + Decimal(cost)
             data["total_usd"] = str(total)
+            if total > self.cap and not data.get("exceeded"):
+                data["exceeded"] = True  # recorded, never clipped; blocks new reservations
+                data["overage_usd"] = str(total - self.cap)
             data["calls"].append(
                 {
                     "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "reservation_id": rid,
                     "model": model,
                     "prompt_version": prompt_version,
                     "input_tokens": tokens[0],
@@ -181,10 +215,32 @@ class SpendGuard:
             return total
 
     def release(self, reservation: Reservation) -> None:
+        """Free a reservation whose request certainly did not reach the provider."""
+        rid = reservation.reservation_id
         with self._locked():
             data = self._load()
-            data["reserved"].pop(reservation.reservation_id, None)
+            settled = data.setdefault("settled", {})
+            if rid in settled:
+                if settled[rid] == {"status": "released"}:
+                    return
+                raise ReservationConflictError(f"reservation {rid} already settled")
+            if rid not in data["reserved"]:
+                raise UnknownReservationError(f"unknown reservation {rid}")
+            data["reserved"].pop(rid)
+            settled[rid] = {"status": "released"}
             self._save(data)
+
+    def acknowledge_overage(self, reason: str) -> None:
+        if not reason.strip():
+            raise ValueError("an overage acknowledgement needs a reason")
+        with self._locked():
+            data = self._load()
+            if data.get("exceeded"):
+                data["overage_acknowledged"] = {
+                    "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                    "reason": reason[:500],
+                }
+                self._save(data)
 
 
 def try_reserve(ledger: str, cap: str, amount: str) -> bool:

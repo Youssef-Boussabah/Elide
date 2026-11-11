@@ -5,9 +5,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from api.app.auth.routes import router as auth_router
 from api.app.demo_ai import router as demo_ai_router
+from api.app.webhooks import router as webhook_router
+from api.app.workspace import router as workspace_router
+from api.app.workspace import workflow_error_handler
 from api.config import get_settings
 from api.db import check_database
+from api.workflow.store import WorkflowError
+from api.workflow.webhooks import RefusingVerifier
 
 VERSION = "0.0.1"
 
@@ -21,6 +27,13 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+    # Test seams: tests may replace these; production uses the real engine and clock.
+    app.state.engine = None
+    app.state.clock = None
+    app.state.session_policy = None
+    app.state.workspace_llm = None  # no paid inference unless explicitly configured
+    app.state.webhook_verifier = RefusingVerifier()
+    app.add_exception_handler(WorkflowError, workflow_error_handler)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -49,6 +62,9 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(demo_ai_router)
+    app.include_router(auth_router)
+    app.include_router(workspace_router)
+    app.include_router(webhook_router)
     return app
 
 

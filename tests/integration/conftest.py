@@ -86,3 +86,68 @@ def fresh_db():
 def uid():
     """Unique suffix so tests sharing the session database never collide."""
     return uuid.uuid4().hex[:8]
+
+
+# --- P4 workspace harness ----------------------------------------------------------------
+class Actor:
+    """One merchant user with its own cookie jar (a separate browser session)."""
+
+    def __init__(self, app, login: str, password: str):
+        from fastapi.testclient import TestClient
+
+        self.login, self.password = login, password
+        self.client = TestClient(app)
+        r = self.client.post("/v1/auth/login", json={"login": login, "password": password})
+        assert r.status_code == 200, r.text
+        self.session = r.json()
+        self.csrf = self.session["csrf_token"]
+
+    def get(self, path: str, **kw):
+        return self.client.get(path, **kw)
+
+    def post(self, path: str, json=None, *, key: str | None = None, csrf: bool = True, **kw):
+        headers = dict(kw.pop("headers", {}))
+        if csrf:
+            headers["X-CSRF-Token"] = self.csrf
+        if key:
+            headers["Idempotency-Key"] = key
+        return self.client.post(path, json=json, headers=headers, **kw)
+
+    def reauth(self):
+        r = self.post("/v1/auth/reauth", json={"password": self.password})
+        assert r.status_code == 200, r.text
+
+
+class Workspace:
+    def __init__(self, app, engine, clock, seeded):
+        self.app, self.engine, self.clock, self.seeded = app, engine, clock, seeded
+
+    @property
+    def now(self):
+        return self.clock[0]
+
+    def advance(self, **kw):
+        from datetime import timedelta
+
+        self.clock[0] = self.clock[0] + timedelta(**kw)
+
+    def actor(self, login: str) -> Actor:
+        return Actor(self.app, login, self.seeded.passwords[login])
+
+
+@pytest.fixture
+def workspace(fresh_db):
+    """A seeded synthetic workspace on its own database, with a controllable clock."""
+    from datetime import UTC, datetime
+
+    from api.app.main import create_app
+    from fixtures.workspace_seed import USERS, seed
+
+    engine, _url = fresh_db
+    clock = [datetime(2026, 11, 11, 18, 0, tzinfo=UTC)]
+    passwords = {login: f"test-only-{i}-{uuid.uuid4().hex[:12]}" for i, login in enumerate(USERS)}
+    seeded = seed(engine, now=clock[0], passwords=passwords)
+    app = create_app()
+    app.state.engine = engine
+    app.state.clock = lambda: clock[0]
+    yield Workspace(app, engine, clock, seeded)

@@ -177,8 +177,30 @@ def reserve_capacity(
     receipts: Iterable[IncomingReceipt] = (),
     allow_synthetic: bool = False,
 ) -> Commitment:
+    with engine.begin() as conn:
+        return reserve_capacity_in(
+            conn,
+            evidence_id=evidence_id,
+            commitment=commitment,
+            at=at,
+            receipts=receipts,
+            allow_synthetic=allow_synthetic,
+        )
+
+
+def reserve_capacity_in(
+    conn: Connection,
+    *,
+    evidence_id: str,
+    commitment: Commitment,
+    at: datetime,
+    receipts: Iterable[IncomingReceipt] = (),
+    allow_synthetic: bool = False,
+) -> Commitment:
+    """`reserve_capacity` inside the caller's transaction (P4: a payment intent and its
+    cash reservation commit or roll back together). Same lock, checks and insert."""
     try:
-        with engine.begin() as conn:
+        with conn.begin_nested():
             _lock_merchant(conn, commitment.merchant_id)
             ev = _load_evidence(conn, evidence_id)
             _require_current(conn, ev, at)

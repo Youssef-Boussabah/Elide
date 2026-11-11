@@ -17,12 +17,27 @@ PLACEHOLDER_PREFIX = "replace-with"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_env: Literal["local", "test", "ci"] = "local"
+    app_env: Literal["local", "test", "ci", "production"] = "local"
     database_url: str = Field(
         default="postgresql+psycopg://elide:elide_local_dev_only@127.0.0.1:5433/elide",
         description="SQLAlchemy URL. Local dev default matches compose.yaml.",
     )
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+    # P4 sessions (ADR-0011 §3). Browser origins allowed to make state-changing requests.
+    app_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
+    # Secure + __Host- cookie prefix. Must be true behind TLS; forced true in production.
+    session_cookie_secure: bool = False
+    session_idle_minutes: int = Field(default=30, ge=1, le=240)
+    session_absolute_hours: int = Field(default=8, ge=1, le=24)
+    step_up_minutes: int = Field(default=10, ge=1, le=60)
+    # No P4 component dispatches payments; P5 enables this only after owner authorization.
+    payments_execution_enabled: bool = False
 
     # PayPal: Sandbox only. There is deliberately no live/production setting.
     paypal_client_id: SecretStr | None = None
@@ -67,6 +82,14 @@ class Settings(BaseSettings):
     @classmethod
     def _blank_cap_is_default(cls, v: object) -> object:
         return Decimal("10.00") if isinstance(v, str) and not v.strip() else v
+
+    @property
+    def cookie_secure(self) -> bool:
+        return self.session_cookie_secure or self.app_env == "production"
+
+    @property
+    def demo_identities_allowed(self) -> bool:
+        return self.app_env in ("local", "test", "ci")
 
     @property
     def paypal_configured(self) -> bool:
