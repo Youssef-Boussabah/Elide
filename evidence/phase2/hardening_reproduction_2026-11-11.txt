@@ -1,0 +1,68 @@
+P2 hardening: plan-record tampering reproduced before the fix
+=============================================================
+Code under test: feat/p2-liquidity-optimizer @ 43b5637 (verify_plan_record before hardening)
+Date: 2026-11-11 (Windows 11, Python 3.12). Evidence class: Synthetic-tested.
+Network: fixtures.planning.network_two_candidates (canonical-p2-v1). No PayPal call.
+
+Test file: tests/unit/planning/test_plan_integrity.py, written before the fix.
+Each of 26 mutations is applied (a) as-is and (b) with plan_id recomputed by the attacker
+(sha256 of the canonical JSON of the other fields). A FAILED line below means the old
+verify_plan_record returned no problem, i.e. the tampering ESCAPED detection.
+("discharged" and the integrity-note test failed because those fields did not exist yet.)
+
+Detected before the fix (passed): leg_amount, feasible_slot_move (via usable_slot),
+gross_flow, may_execute - in both variants - plus the untampered and wrong-network checks.
+
+Raw pytest summary (before the fix):
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[alternative]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[baseline_b3]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[binding_constraints]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[buyer_benefit]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[discharged]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[dollar_days]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[downstream_face]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[drop_dependency]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[drop_leg_approval]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[drop_required_approval]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[drop_warning]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[extend_expiry]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[fees]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[forge_recorded_decision]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[hide_supplier_loss]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[incremental_vs_b3]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[leg_proceeds]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[leg_status]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[on_time_flag]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[plan_id]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[rejected_leg_code]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[slot_start]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected[solver_value]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[alternative]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[baseline_b3]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[binding_constraints]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[buyer_benefit]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[discharged]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[dollar_days]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[downstream_face]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[drop_dependency]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[drop_leg_approval]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[drop_required_approval]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[drop_warning]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[extend_expiry]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[fees]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[forge_recorded_decision]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[hide_supplier_loss]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[incremental_vs_b3]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[leg_proceeds]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[leg_status]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[on_time_flag]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[rejected_leg_code]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[slot_start]
+FAILED tests/unit/planning/test_plan_integrity.py::test_tampering_is_detected_even_with_a_recomputed_plan_id[solver_value]
+FAILED tests/unit/planning/test_plan_integrity.py::test_a_matching_hash_is_not_an_authorization
+46 failed, 10 passed in 0.89s
+
+After the fix (plan_id = content checksum, every financial field re-derived from the
+network by the independent verifier, then a deterministic rebuild compared key by key):
+all 56 tests in test_plan_integrity.py pass; every mutation is detected with and without a
+recomputed plan_id. A matching checksum is not an authorization or a signature.

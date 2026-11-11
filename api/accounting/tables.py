@@ -85,6 +85,8 @@ journal_posting = Table(
     CheckConstraint("amount_cents <> 0", name="ck_journal_posting_nonzero"),
 )
 Index("ix_journal_posting_account", journal_posting.c.account, journal_posting.c.currency)
+# Created by migration 0002; declared here so `alembic check` sees no drift.
+Index("ix_journal_posting_entry", journal_posting.c.entry_id)
 
 provider_event_inbox = Table(
     "provider_event_inbox",
