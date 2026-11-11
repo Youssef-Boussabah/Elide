@@ -523,6 +523,35 @@ Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.
 - Plan commitments are not released automatically when a newer balance snapshot reflects the outflow; the release is manual through the P1 store.
 - Doc 12 lists more metrics (consent, completion and privacy-refusal rates). These need real or multi-session data and are not computed.
 
+## P3 detail (2026-11-11, branch `feat/p3-ai-policy-negotiation`)
+
+Design record: **ADR-0010**; API contract: `docs/api/P3_DEMO_API.md`. Provider: **Nebius
+Token Factory** (owner-authorized, USD 10 cap from the existing balance; no top-ups, no
+credit purchases, no dedicated endpoints). OpenAI-compatible strict JSON-schema output over
+`httpx`; no tools; key only in the untracked `.env`.
+
+### Implemented (code `e1473d4`)
+| Area | What |
+|---|---|
+| `api/ai` | adapter + `ModelCall` metadata (REAL/MOCK label, prompt version, tokens, estimated cost, context hash); Nebius/OpenAI-compatible client; spend guard (`.elide/llm_spend.json`, git-ignored); scripted MOCK adapter; versioned prompts; typed output schemas |
+| `api/policy` | deterministic validation (grounding + spans, exact USD, explicit dates, own-network scope, no relaxation via AI, documents cannot set policy, independent scanner); confirmation by the same merchant with the exact digest (Python only); `apply_confirmed_policy` (tighter only) |
+| `api/negotiation` | bounded counteroffer from solver diagnosis + deterministic bounds; message guards; unsigned DRAFT revision re-planned by P2; per-merchant views; verified-plan explanations with fact checks and template fallback |
+| `api/app/demo_ai.py` | `POST /v1/demo/policies/draft`, `/policies/validate`, `/negotiation/counteroffer`, `/plans/explain` (synthetic only, no mutations, no confirm/approve/pay endpoints) |
+| Evaluation | `policy-eval-v1`: 40 labelled cases (15 categories) + 12 compromised-model outputs; `scripts/run_ai_eval.py` (live/mock), `scripts/llm_probe.py` |
+
+### Verification (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.1:5433`)
+| Check | Result |
+|---|---|
+| `ruff check .` / `ruff format --check .` | pass / pass (149 files) |
+| `alembic check` | no drift (no migration in P3) |
+| `pytest` (full) | **596 passed, 0 failed, 0 skipped** (+109: 98 `tests/unit/ai`, 11 contract), 1 known Starlette warning |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
+| MOCK eval (`run_ai_eval.py --mode mock`, reference extractions; **not model evidence**) | 40/40 status agreement, 17/17 READY values exact, 23/23 correct abstentions, **0 unsafe passes**; all 12 compromised outputs refused |
+| REAL model inference | **pending**: no LLM key configured yet (owner adds `LLM_PROVIDER=nebius` + `LLM_API_KEY` to `.env`); then `scripts/llm_probe.py` selects the model and `run_ai_eval.py --mode live` records evidence |
+
+### Owner action required
+- Add to the untracked `.env`: `LLM_PROVIDER=nebius` and `LLM_API_KEY=<Nebius key>`. Never paste the key in chat.
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -617,3 +646,8 @@ Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.
   **Next task:** owner final approval of P2 (do not start P3).
 - 2026-11-11 (Claude Code, Opus 5.5): owner approved P2 (`04663db`, CI run #11). Merged into
   `main` with `--no-ff` → `7bb068c`. **Next task:** P3 on `feat/p3-ai-policy-negotiation`.
+- 2026-11-11 (Claude Code, Opus 5.5): P3 started on `feat/p3-ai-policy-negotiation`; owner
+  chose Nebius Token Factory with a USD 10 cap. Implemented adapter, deterministic policy
+  validation, bounded counteroffer, explanations, 4 demo endpoints and the labelled eval
+  (`e1473d4`). 596 tests pass; MOCK eval 0 unsafe passes. Real inference pending the owner's
+  key. **Next task:** model probe + live eval once the key is in `.env`.
