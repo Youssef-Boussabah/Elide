@@ -1,10 +1,10 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **implemented on branch `feat/p1-financial-kernel`, pending owner architectural review**; all P1 tests pass locally and in CI (see *P1 detail*). Not merged to `main`. No P2 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **implemented on branch `feat/p1-financial-kernel`; owner review gave conditional approval with 7 findings, all remediated and pending owner re-review** (see *P1 review remediation*). Not merged to `main`. No P2 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
 | P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
-| P1 | Money model, reserves, fees, revisions and fixtures pass | **Implemented, pending review** on `feat/p1-financial-kernel`: 259 tests pass (0 skipped), incl. 12 Hypothesis properties and 26 PostgreSQL integration tests | pytest / property test output |
+| P1 | Money model, reserves, fees, revisions and fixtures pass | **Implemented; review findings remediated, pending re-review** on `feat/p1-financial-kernel`: 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | Not started | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
@@ -335,15 +335,74 @@ Ledger / idempotency evidence (integration tests):
 | Held $990 receipt; $150 reserve shortfall $60; duplicate obligation | met | Scenarios C, D, E |
 | Ledger idempotency / concurrency / rollback | met | integration tests listed above |
 | CI green on the branch | met | [run #3](https://github.com/Youssef-Boussabah/Elide/actions/runs/42923590785) on `daabed964dcada9ee7e18c89212a6bf82a9e9e2a`: backend **259 passed, 0 skipped** (migration 0002 applied to the CI PostgreSQL service), frontend 3 passed + build |
-| Owner architectural review | **pending** | — |
+| Owner architectural review | **conditional approval**; findings 1–7 remediated, **re-review pending** | *P1 review remediation* below |
+
+### P1 review remediation (2026-11-11)
+
+Owner review of `91b8152`: strong implementation, conditional approval. Every finding was
+reproduced against that commit before it was fixed; regression tests were written first
+and failed (19 failed + 3 modules not importable) before the fixes. Reproduction output:
+`evidence/phase1/review_reproduction_2026-11-11.txt`. Design record: ADR-0008 addendum
+(decisions 13–20). Migration **`0003_review_remediation`** (new revision; 0002 unchanged).
+
+| # | Finding | Reproduced | Root cause | Fix |
+|---|---|---|---|---|
+| 1 | Critical: duplicate receipt counted twice | yes: $990 twice → $1,980 deployable | `compute_capacity` summed every record; no receipt identity | receipts keyed by (merchant, id); identical copies collapse; differing records → `ReceiptConflictError`; `mark_available` replaces the held record |
+| 2 | High: evidence round trip / older snapshot | yes: included ids lost; identical replay rejected; $900 reserved on an older snapshot after a newer $10 one | no column for `included_receipt_ids`; no selection rule | `0003` adds immutable `included_receipt_ids`; `EvidenceConflictError`; latest observation per (merchant, currency) is authoritative, older ids refused (`SupersededEvidenceError`); one observation per instant |
+| 3 | High: status alone proved spendability | yes: synthetic and "PAID" receipts with the status counted $990 | the enum value was the only check | `AvailabilityEvidence` required (SYNTHETIC only in simulation / MERCHANT_ATTESTED by the receiving merchant / PROVIDER_BALANCE), must differ from the payment confirmation; evidence kind must match provenance source |
+| 4 | High: offer expiry vs accepted terms | yes: a rejected $5 offer was "accepted" as $90 | `supersedes` only checked draft expiry | acceptance must target an open, unexpired offer with identical terms; rejected/accepted/countered offers closed; accepted terms never expire; `expires_at` only on offers |
+| 5 | High: local reversal looked provider-verified | yes: copied `sandbox_verified` and the capture ref | `reversal()` inherited class and ref | explicit `evidence_class`; new `manual_adjustment`; provider-verified reversal needs a refund/dispute ref ≠ original; synthetic ↔ real refused; store re-checks; one refund backs one reversal |
+| 6 | Medium: non-atomic settlement import | yes (by construction: three separate transactions) | `post_entry` per entry | `post_entries` (one transaction) + `import_settlement`; status derived (`NOT_IMPORTED`/`PARTIAL`/`COMPLETE`/`CONFLICT`), no stored flag |
+| 7 | Terminology | yes: P1 exit report said every account but CAD is zero | wording | docstrings and entry description: illustrative bookkeeping, no revenue-recognition claim, FX position ≠ cash, one receipt; test asserts the exact non-zero balances |
+| + | Found during fix 6: concurrent replay race | yes: 2 of 8 runs raised `DuplicateProviderEventError` instead of DUPLICATE | `ON CONFLICT` targeted only the idempotency key | every unique index is an arbiter, conflict classified afterwards; 15/15 stress runs pass |
+
+New regression tests: `tests/unit/liquidity/test_receipt_identity_and_evidence.py` (27 incl.
+parametrized cases), `tests/unit/domain/test_revision_lifecycle.py` (15),
+`tests/unit/accounting/test_reversal_evidence.py` (11), `tests/property/test_receipt_and_evidence_props.py`
+(3 Hypothesis), `tests/property/test_revision_props.py` (1 Hypothesis, 400 examples),
+`tests/integration/test_review_remediation_db.py` (13, each in its own throwaway database).
+Existing tests adjusted only where they used labels the new rules reject (merchant-attested
+evidence with synthetic or PayPal provenance; verified receipts without availability
+evidence; reversals without an evidence class).
+
+Verification after remediation (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.1:5433`):
+| Check | Result |
+|---|---|
+| `uv sync --locked` | pass (no new dependencies) |
+| `ruff check .` / `ruff format --check .` | pass / pass (103 files) |
+| Dev DB `alembic upgrade head` | `0002` → `0003_review_remediation` (additive; tables were empty) |
+| Migration round trip head → 0001 → head (throwaway DB) | pass |
+| `pytest tests/unit` | **264 passed** |
+| `pytest tests/property` | **15 passed** (+1 Hypothesis property in `tests/unit/accounting`: 16 total) |
+| `pytest tests/contract` | **11 passed** |
+| `pytest tests/integration` | **39 passed, 0 skipped** |
+| `pytest` (full) | **329 passed, 0 failed, 0 skipped**, 1 known Starlette warning |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
+
+Remaining risks after remediation:
+- Incoming receipts are not persisted; callers supply them and the engine checks them.
+  Receipt lifecycle storage and a real available-balance check (`PROVIDER_BALANCE`) are P5.
+- Commitments stay active across newer evidence (conservative: may double-subtract cash
+  already spent). P2 must release commitments when an outflow is reflected in a newer
+  observation.
+- Accepted discounts are unconditional amendments; a lapsing "pay by X" discount is not
+  modeled. P2 should only create authorized amendments as part of an approved plan.
+- Provider refunds: no partial-refund entry kind and no refund GET verification; no code
+  path creates `sandbox_verified` reversals yet.
+- Webhook worker, signature verification, tenant authorization: still P4/P5. INV-1
+  timestamp cause still unknown. Starlette deprecation warning unchanged.
 
 ### Dependencies for P2
 Planner and replay verifier consume: `InvoiceRecord.position()` (open amounts, authorized
 concessions, due dates), `compute_capacity` / `assess_outflow` (deployable, deficit,
 explanations), `Commitment` + `reserve_capacity` (cash reservation per plan),
 `simulate` (reference replay for synthetic chains), `fixtures/canonical.py` (B0–B5
-scenarios), and the journal for realized outcomes. Open items P2 must decide: slot/lag
-model for verified availability, how plan reservations expire, fee model per leg.
+scenarios), and the journal for realized outcomes. Since the review: `current_evidence` /
+`SupersededEvidenceError` (only the newest balance snapshot may fund a plan),
+`IncomingReceipt` + `AvailabilityEvidence` + `mark_available` (one state per receipt),
+`ReceiptConflictError`, `post_entries` / `import_settlement` (atomic bundles). Open items
+P2 must decide: slot/lag model for verified availability, how plan reservations expire
+and are released when a newer observation reflects the outflow, fee model per leg.
 
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
@@ -416,3 +475,8 @@ model for verified availability, how plan reservations expire, fee model per leg
   **Next task:** owner architectural review of P1; P2 only after approval.
 - 2026-11-11 (Claude Code, Opus 5.5): CI now also runs on `feat/**` pushes. Run #3 on
   `daabed9` green (backend 259 passed / 0 skipped; frontend ok). P1 stops here for review.
+- 2026-11-11 (Claude Code, Opus 5.5): P1 review remediation on `feat/p1-financial-kernel`.
+  All 7 owner findings reproduced on `91b8152`, regression tests written first (failed),
+  then fixed; plus a concurrent-replay race found while fixing #6. Migration `0003`
+  (dev DB upgraded, additive). 329 tests pass locally (0 skipped). No PayPal calls,
+  no credential changes. Not merged. **Next task:** owner re-review of P1.

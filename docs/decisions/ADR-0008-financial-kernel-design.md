@@ -1,6 +1,6 @@
 # ADR-0008: Phase 1 financial kernel design choices
 
-- **Date:** 2026-11-10 · **Status:** Accepted (implementation choices; no frozen decision changed)
+- **Date:** 2026-11-10, amended 2026-11-11 (review remediation) · **Status:** Accepted (implementation choices; no frozen decision changed)
 - **Context:** Phase 1 implements money, invoices, capacity, provider settlement and the
   journal (execution plan Phase 1; docs 04, 05, 08, 09, 10, 11). Several details were
   left open by the source documents.
@@ -73,3 +73,74 @@ evidence tables hold amounts, opaque ids and provider resource ids only.
 `tests/unit/domain`, `tests/unit/liquidity`, `tests/unit/accounting`, `tests/unit/scenarios`,
 `tests/property/*`, `tests/integration/test_financial_kernel_db.py` (throwaway database per
 session, real migrations).
+
+## Addendum 2026-11-11: Phase 1 architectural review remediation
+
+The owner's review of `91b8152` found six problems. Each was reproduced against that
+commit before it was fixed (`evidence/phase1/review_reproduction_2026-11-11.txt`).
+Decisions 1–12 still hold; the following refine them.
+
+13. **One receipt counts once (review finding 1, critical).** `compute_capacity` keys
+    receipts by (merchant, `receipt_id`). Identical copies collapse. Two different records
+    for one receipt (amount, currency, status, availability) raise `ReceiptConflictError`:
+    the caller supplies the receipt's current state once. `mark_available` produces the
+    verified state as a *replacement* of the held record, never a second receipt.
+    Receipts of other merchants are ignored, not merged. `included_receipt_ids` still
+    excludes receipts already in the observed balance.
+14. **Availability needs its own evidence (finding 3).** `AVAILABLE_VERIFIED` requires an
+    `AvailabilityEvidence` with a basis: `SYNTHETIC` (synthetic receipts only; counts only
+    with `allow_synthetic=True`), `MERCHANT_ATTESTED` (only the receiving merchant may
+    attest), or `PROVIDER_BALANCE` (an independently fetched available-balance check, none
+    implemented yet). The evidence reference must differ from the payment confirmation
+    that created the receipt, so a PayPal `PAID` invoice or `COMPLETED` capture cannot
+    vouch for its own spendability. A receipt counts from `max(available_at, verified_at)`.
+    `CapacityEvidence.kind` must match its provenance source (synthetic ⇔ synthetic
+    fixture; merchant-attested ⇐ merchant attestation; provider-verified ⇐ PayPal Sandbox).
+15. **Evidence persistence and supersession (finding 2).** Migration `0003` stores
+    `included_receipt_ids` (immutable with the append-only row), so evidence round-trips
+    exactly; identical replays are no-ops and conflicting ids raise
+    `EvidenceConflictError`. **Selection rule:** for one merchant and currency, the latest
+    observation with `observed_at <= at` is authoritative; older snapshots are superseded
+    even while their own validity window is open, and an expired newest snapshot does not
+    fall back to an older one. `reserve_capacity` and `capacity_now` refuse a superseded
+    evidence id (`SupersededEvidenceError`); `current_evidence` returns the current one. A
+    unique index allows one observation per (merchant, currency, instant).
+16. **Offer expiry vs accepted terms (finding 4).** `expires_at` exists only on offers
+    (DRAFT). An acceptance (AUTHORIZED with `supersedes` = the offer) must be made before
+    the deadline, by both parties, with exactly the offered concession, due date and
+    timezone. Rejected, accepted and countered offers are closed. Accepted terms have no
+    expiry and stay in force after the offer deadline (and after a refund) until later
+    authorized terms replace them. A rejection must reference an offer. Payment
+    authorization and plan expiry are not invoice properties (P2 commitments, P4
+    approvals). Two parties may still sign fresh terms without `supersedes`; that is a new
+    agreement, not an acceptance of an expired offer. Conditional (lapsing) early-payment
+    discounts are not modeled.
+17. **Reversal evidence (finding 5).** `JournalEntry.reversal` requires an explicit
+    `evidence_class`; nothing is inherited. Local corrections are `MANUAL_ADJUSTMENT` (new
+    class, no provider resource). `SANDBOX_VERIFIED` reversals must cite a provider
+    `refund` or `dispute` resource different from the original. Synthetic and real books
+    never reverse each other. The store re-checks this against the persisted original, and
+    since `0003` one provider refund can back only one reversal. Partial provider refunds
+    and refund verification (GET) are not implemented.
+18. **Atomic settlement import (finding 6).** `post_entries` books a bundle in one
+    transaction; `import_settlement` uses it for the invoice, discount and capture entries.
+    Reconciliation is derived (`bundle_status`: NOT_IMPORTED / PARTIAL / COMPLETE /
+    CONFLICT) from the booked rows and content digests; there is no stored "reconciled"
+    flag. A bundle partly booked by single-entry posting reports PARTIAL and can be
+    completed idempotently.
+19. **Concurrent replay race (found while fixing 6).** `ON CONFLICT` targeted only the
+    idempotency key, so a concurrent replay of a provider-referenced entry could hit the
+    provider-event index first and raise instead of returning DUPLICATE (seen in 2 of 8
+    runs). Nothing was double-booked, but replays were not reliably idempotent. The insert
+    now treats every unique index as an arbiter and then classifies the conflict.
+20. **Accounting terminology (finding 7).** The seller-side entries are illustrative
+    bookkeeping. Booking revenue at invoice issue is a simplification, not a
+    revenue-recognition determination. After the Sandbox settlement only the receivable
+    and USD clearing are zero; revenue, discount, fee and the FX conversion position keep
+    balances. `fx_conversion_position` is not merchant cash; the USD-equivalent net and the
+    CAD credit are one receipt.
+
+Remediation tests: `tests/unit/liquidity/test_receipt_identity_and_evidence.py`,
+`tests/unit/domain/test_revision_lifecycle.py`, `tests/unit/accounting/test_reversal_evidence.py`,
+`tests/property/test_receipt_and_evidence_props.py`, `tests/property/test_revision_props.py`,
+`tests/integration/test_review_remediation_db.py`.
