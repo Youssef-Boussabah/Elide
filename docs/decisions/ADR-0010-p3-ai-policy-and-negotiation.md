@@ -122,3 +122,55 @@ must add tenant scoping and redaction before any real merchant text is used.
 - Confirmation happens in process, without authentication (P4).
 - There is no persistence of drafts or confirmed policies yet.
 - The model-quality metrics come from 40 synthetic cases and are not field validation.
+
+## Addendum (2026-11-11): real inference, model choice, opportunity analysis
+
+12. **Model choice (from real calls).** The live `/v1/models` list returned 23 models.
+    Strict-JSON probes passed on `Qwen/Qwen3-235B-A22B-Instruct-2507` and
+    `Qwen/Qwen3-30B-A3B-Instruct-2507`. `openai/gpt-oss-120b` spent its 200-token probe on
+    hidden reasoning and returned no content. All three were evaluated on
+    `policy-eval-v1`; **Qwen3-235B-A22B-Instruct-2507** was selected and stays the default.
+    It had the best status agreement and exact values, 0 schema failures in 160 calls, and
+    the lowest false-abstention rate.
+13. **Changes made because of real-model results.** The eval set is a *development* set,
+    not a held-out test.
+    - Prompt `policy-extract-v2`: Qwen3-235B on v1 added an unrequested
+      `approve_each_payment` to 9 of 40 outputs. The deterministic grounding check caught
+      every one, but they turned safe drafts into REJECTED. v2 makes `unspecified` the
+      explicit default.
+    - The validator now ignores an ungrounded approval preference, with a note, instead of
+      blocking the draft. The preference is never applied, so nothing is lost.
+    - New `UNCAPTURED_DATE` check: every date-like phrase in the text must lie inside a
+      captured date field. gpt-oss-120b dropped "through Friday" from "Keep $600 for
+      payroll through Friday", and the old validator let that draft through as READY, so
+      the eval counted it as an unsafe pass. The reserve would have lasted longer than
+      intended (stricter, not looser), but the misreading must still go to clarification.
+      The real output is kept as adversarial case `adv-13`.
+14. **Spend control in practice.** All calls were sequential. The local estimate (1.5×
+    listed prices, upper bound) totalled USD 0.123. The Nebius console showed trial
+    credits falling from USD 0.99 to USD 0.93, an actual spend of about USD 0.06; the
+    USD 50.00 account balance was untouched. The usage table lags (last updated 19:46
+    UTC). The local cap is not a provider-side cap; the console is the source of truth.
+15. **Proactive opportunity analysis** (`api/opportunities`, `elide.opportunities.v1`).
+    Starting from the P2 network and evidence, without any prompt:
+    - runs the verified plan and B0–B5;
+    - lists bottlenecks with deterministic reasons, taken from the best *current* terms
+      (proposals excluded): capacity, the payer's or payee's own rules,
+      `COMPETES_WITH_PLAN`, `FUNDS_UNAVAILABLE`, currency, dispute, expiry;
+    - recommends `RECOMMEND_PLAN`, `NEGOTIATE`, `NO_ACTION` or `BLOCKED`. `NEGOTIATE`
+      needs a bounded discount hint, i.e. the best offer fails the payer's own minimum or
+      cash, or a pending proposal would help;
+    - compares exactly against B0, B1 and B3, and states when earliest-due-first already
+      matches the plan;
+    - flags participant modeled losses, uncertain or example fees, unavailable or blocked
+      funds, the buyer earning below its own best plan, outstanding synthetic approvals
+      and simulated downstream legs.
+
+    `merchant_view` gives each merchant its own actions, bottlenecks, hints and benefit;
+    others appear as counts, and the network comparison goes to the initiating merchant
+    only. `facts` feeds the same checked narration used for plans. The analysis is
+    read-only and deterministic.
+16. **Paid-token routes are local-only.** Every route that can call the model answers
+    loopback clients only (HTTP 403 otherwise) until P4 authentication exists. The
+    deterministic routes `/policies/validate` and `/opportunities` stay open, but they use
+    synthetic fixtures only and cost nothing.

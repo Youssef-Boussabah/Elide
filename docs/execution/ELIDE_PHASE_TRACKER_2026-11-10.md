@@ -1,12 +1,12 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 in progress on `feat/p3-ai-policy-negotiation`. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **implemented on `feat/p3-ai-policy-negotiation`, pending owner review**; not merged; no P4 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
 | P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | **Complete** (owner-approved 2026-11-11; merged `41c0f9f`): 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests; CI run #7 on `main` green | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
-| P3 | Live policy parsing and bounded offer proposal safely gated | In progress on `feat/p3-ai-policy-negotiation` | Prompt version + schema result + injection tests |
+| P3 | Live policy parsing and bounded offer proposal safely gated | **Implemented, pending review** on `feat/p3-ai-policy-negotiation`: real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled cases; 612 tests pass | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
 | P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
@@ -547,10 +547,61 @@ credit purchases, no dedicated endpoints). OpenAI-compatible strict JSON-schema 
 | `pytest` (full) | **596 passed, 0 failed, 0 skipped** (+109: 98 `tests/unit/ai`, 11 contract), 1 known Starlette warning |
 | Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
 | MOCK eval (`run_ai_eval.py --mode mock`, reference extractions; **not model evidence**) | 40/40 status agreement, 17/17 READY values exact, 23/23 correct abstentions, **0 unsafe passes**; all 12 compromised outputs refused |
-| REAL model inference | **pending**: no LLM key configured yet (owner adds `LLM_PROVIDER=nebius` + `LLM_API_KEY` to `.env`); then `scripts/llm_probe.py` selects the model and `run_ai_eval.py --mode live` records evidence |
+| REAL model inference | done; see *Real model inference* below |
 
-### Owner action required
-- Add to the untracked `.env`: `LLM_PROVIDER=nebius` and `LLM_API_KEY=<Nebius key>`. Never paste the key in chat.
+### Real model inference (Nebius Token Factory, 2026-11-11). REAL, kept separate from the deterministic results
+- Authentication verified through the model list; the key was never printed.
+- Spend:
+
+  | Source | Amount |
+  |---|---|
+  | Nebius console, trial credits | USD 0.99 → **USD 0.93** after all runs (≈ USD 0.06 actually spent) |
+  | Nebius console, account balance | USD 50.00, untouched |
+  | Local upper-bound estimate | USD 0.123 (ledger in `.elide/`, untracked) |
+
+- Probe (`evidence/phase3/llm_probe_2026-11-11.json`): 23 models listed. Strict JSON worked on both Qwen models; gpt-oss-120b returned no content within 200 tokens.
+
+| Model (prompt v2, final validator) | Schema failures | Provider failures | Status agreement | READY values exact | Correct abstentions | False abstentions | **Unsafe passes** | Tokens in/out | Est. cost |
+|---|---|---|---|---|---|---|---|---|---|
+| **Qwen3-235B-A22B-Instruct-2507** (selected) | 0 | 1 | 38/40 | 16/17 | 23/23 | 1 | **0** | 25,140 / 7,738 | USD 0.0145 |
+| Qwen3-235B (earlier v2 run, same validator) | 0 | 0 | 39/40 | 17/17 | 23/23 | 0 | **0** | 25,392 / 7,750 | USD 0.0146 |
+| openai/gpt-oss-120b | 0 | 0 | 38/40 | 16/17 | 23/23 | 1 | **0** | 27,143 / 20,740 | USD 0.0248 |
+| Qwen3-30B-A3B-Instruct-2507 | 1 | 0 | 36/40 | 15/17 | 23/23 | 2 | **0** | 24,781 / 8,000 | USD 0.0073 |
+
+Earlier runs, kept as evidence:
+- **Qwen3-235B with prompt v1:** 31/40. It added 9 approval preferences nobody asked for; grounding refused all of them. 5 false abstentions, 0 unsafe passes.
+- **gpt-oss-120b before the `UNCAPTURED_DATE` check:** **1 unsafe pass**. In dat-01 it dropped "through Friday". That is stricter rather than looser, but still a misreading, so the validator was fixed and regression case `adv-13` added.
+
+A label mismatch recurs: rel-01 ("Lower my reserve to $200") comes back NEEDS_CLARIFICATION instead of REJECTED, because the model refuses instead of extracting a value. That is safe.
+
+Real counteroffer (Qwen3-235B): **DRAFT_PROPOSED** at $10.00, and the message passed every guard. The real plan explanation and the real opportunity narration both came back **EXPLAINED**, and their fact checks passed.
+
+### Opportunity analysis and security (code `860d980`)
+- `api/opportunities` is a proactive, read-only analysis that needs no prompt. It returns:
+  - bottlenecks, each with its reason;
+  - a recommendation: RECOMMEND_PLAN, NEGOTIATE, NO_ACTION or BLOCKED;
+  - comparisons against B0, B1 and B3;
+  - flags: participant loss, uncertain fee, unavailable funds, buyer below its own best plan, outstanding approvals, simulated downstream legs;
+  - privacy-scoped views, and facts for the narration.
+- Canonical results:
+
+  | Scenario | Recommendation | Detail |
+  |---|---|---|
+  | two_candidates | RECOMMEND_PLAN | +$2,700 vs B0, $0 vs B1, +$850 vs B3; supplier loss flagged |
+  | negotiation | NEGOTIATE | the supplier offers $5; at least $10 is needed |
+  | timing_matters | RECOMMEND_PLAN | +$900 vs B1 |
+  | held receipt, reserve shortfall, CAD credit | NO_ACTION | each with its reason |
+
+- Model-backed routes answer loopback clients only; remote clients get 403. There are no confirm, approve or pay routes, no real merchant data and no financial mutations.
+
+### Verification after the live work
+| Check | Result |
+|---|---|
+| `pytest` (full) | **612 passed, 0 failed, 0 skipped** |
+| `ruff check` / `ruff format --check` / `alembic check` | pass / pass (162 files) / no drift |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
+| GitHub Actions run #15 (id 43103506735) on `430e783` | **success**: backend (incl. `alembic check` and pytest) and frontend. Runs #13 and #14 on earlier commits are stuck in "queued" and superseded |
+| Secret scan of staged files for the real key value | 0 files |
 
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
@@ -651,3 +702,7 @@ credit purchases, no dedicated endpoints). OpenAI-compatible strict JSON-schema 
   validation, bounded counteroffer, explanations, 4 demo endpoints and the labelled eval
   (`e1473d4`). 596 tests pass; MOCK eval 0 unsafe passes. Real inference pending the owner's
   key. **Next task:** model probe + live eval once the key is in `.env`.
+- 2026-11-11 (Claude Code, Opus 5.5): P3 real inference on Nebius (~USD 0.06 actually spent,
+  console-verified): 3 models evaluated, Qwen3-235B selected; prompt v2 and UNCAPTURED_DATE
+  fix from live results; opportunity analysis; model routes loopback-only. 612 tests pass;
+  CI run #15 green. Not merged. **Next task:** owner review of P3 (do not start P4).
