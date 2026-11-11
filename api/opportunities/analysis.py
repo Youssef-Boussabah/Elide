@@ -5,19 +5,26 @@ Starting only from the network and its financial evidence, this module:
 - lists bottlenecks: invoices not paid on time without coordination (B0), with the
   deterministic reason (capacity, the payer's or payee's own rules, expired offer,
   currency-blocked or unverified/held funds, dispute) and whether the plan unlocks them;
-- recommends one of: RECOMMEND_PLAN (more paid on time than doing nothing),
-  NEGOTIATE (no improvement today, but a bounded discount counteroffer could unlock an
-  invoice), NO_ACTION (nothing to gain; the honest default), BLOCKED (nothing can be paid
-  and no bounded change helps);
+- separates the decision into feasibility, advantage over baselines (B0 do nothing, B1
+  earliest-due-first, B3 random buyer tie-break), each participant's modeled net benefit,
+  fee/availability uncertainty and outstanding consent, then recommends one of:
+  RECOMMEND_PLAN (feasible, pays more on time than doing nothing, and no participant has
+  a modeled loss it has not declared it accepts), REVIEW_ECONOMICS (pays more on time,
+  but some participant has an undeclared modeled loss), NEGOTIATE (no improvement today,
+  but a bounded discount counteroffer could unlock an invoice), NO_ACTION (nothing to
+  gain; the honest default) or BLOCKED (no verified plan). Every recommendation is
+  conditional: no approval is recorded and no downstream funds are verified spendable;
 - reports increments against B0 (do nothing), B1 (earliest-due-first) and B3 (random
   buyer tie-break), and says plainly when a simple rule already matches the plan;
 - flags supplier modeled losses, uncertain fees, unavailable or blocked funds, the buyer
   earning less than its own best choice, synthetic approvals that are still outstanding,
   and simulated downstream legs.
 
-`merchant_view` scopes the report to one merchant (its own legs, bottlenecks, benefit and
-flags; counts only for the rest) and `facts` turns that view into numbered facts for the
-explanation layer. Nothing here changes an invoice, a reserve, a commitment or an approval.
+`merchant_view` derives a separate view per merchant: its own legs, its own invoices (the
+blocking reason only when it is the payer), its own benefit, approvals and flags, and a
+personal recommendation. Network totals, counts and comparisons go to the initiating
+merchant only. `facts` turns that view into numbered facts for the explanation layer.
+Nothing here changes an invoice, a reserve, a commitment or an approval.
 """
 
 from __future__ import annotations
@@ -160,30 +167,6 @@ def analyze(net: Network) -> dict[str, Any]:
                 f"{_usd(on_time['B5'] - on_time['B4'])} more on time if both parties sign it",
             }
         )
-    gain_b0 = on_time["B4"] - on_time["B0"]
-    if plan["solver"]["status"] not in ("OPTIMAL", "FEASIBLE"):
-        action, why = "BLOCKED", "the planner could not produce a verified plan"
-    elif gain_b0 > 0:
-        action, why = (
-            "RECOMMEND_PLAN",
-            (f"the plan pays {_usd(gain_b0)} more invoice face on time than doing nothing"),
-        )
-    elif hints:
-        action, why = (
-            "NEGOTIATE",
-            (
-                "nothing more can be paid on time under current terms, but a bounded discount "
-                "counteroffer could unlock an invoice"
-            ),
-        )
-    elif bottlenecks:
-        action, why = (
-            "NO_ACTION",
-            ("no feasible change pays more on time; the blocking reasons are listed"),
-        )
-    else:
-        action, why = "NO_ACTION", "everything is already paid on time without coordination"
-
     flags: list[dict[str, Any]] = []
     for m in plan["economics"]["modeled_losses"]:
         flags.append(
@@ -241,6 +224,83 @@ def analyze(net: Network) -> dict[str, Any]:
             }
         )
 
+    gain_b0 = on_time["B4"] - on_time["B0"]
+    gain_b1 = on_time["B4"] - on_time["B1"]
+    gain_b3 = on_time["B4"] - on_time["B3"]
+    feasible = plan["solver"]["status"] in ("OPTIMAL", "FEASIBLE") and plan["verifier"]["ok"]
+    participants = plan["economics"]["participants"]
+    nets = {m: plan["merchant_benefits"][m]["net_benefit"] for m in participants}
+    unjustified = []
+    for m in participants:
+        floor = net.policy(m).min_receipt_net_benefit_cents
+        if nets[m] < 0 and (floor is None or nets[m] < floor):
+            unjustified.append(m)  # a loss the merchant has not declared it accepts
+    uncertainty = sorted(
+        {
+            f["code"]
+            for f in flags
+            if f["code"] in ("FEE_UNCERTAIN", "FUNDS_UNAVAILABLE", "DOWNSTREAM_SIMULATED")
+        }
+    )
+    approvals_needed = len(plan["required_approvals"])
+    decision = {
+        "feasible": feasible,
+        "advantage": {
+            "vs_do_nothing_B0": _cents_str(gain_b0),
+            "vs_earliest_due_first_B1": _cents_str(gain_b1),
+            "vs_random_tie_break_B3": _cents_str(gain_b3),
+            "network_awareness_needed": gain_b1 > 0,
+        },
+        "buyer_net_benefit_cents": nets.get(focal, 0) if focal in participants else None,
+        "participant_net_benefit_cents": nets,
+        "unjustified_modeled_losses": unjustified,
+        "uncertainty": uncertainty,
+        "consent": {"approvals_required": approvals_needed, "approvals_recorded": 0},
+    }
+    conditions = [
+        "every payer and counterparty must approve its own leg; no approval is recorded",
+        "downstream receipts are simulated; no downstream funds are verified spendable",
+    ]
+    if "FEE_UNCERTAIN" in uncertainty:
+        conditions.append("at least one fee is a ceiling, an estimate or an example")
+    if "FUNDS_UNAVAILABLE" in uncertainty:
+        conditions.append("some funds are held, unverified or currency-blocked and count for zero")
+    same = (
+        " Paying earliest-due-first already achieves the same on-time result, so this is not "
+        "a network-aware improvement."
+        if gain_b0 > 0 and gain_b1 <= 0
+        else ""
+    )
+    if not feasible:
+        action, why = "BLOCKED", "the planner could not produce a verified plan"
+    elif gain_b0 > 0 and unjustified:
+        action, why = (
+            "REVIEW_ECONOMICS",
+            f"the plan pays {_usd(gain_b0)} more invoice face on time than doing nothing, but "
+            f"{len(unjustified)} participant(s) have a modeled loss with no declared offsetting "
+            "benefit; review the economics before asking anyone to approve." + same,
+        )
+    elif gain_b0 > 0:
+        action, why = (
+            "RECOMMEND_PLAN",
+            f"the plan pays {_usd(gain_b0)} more invoice face on time than doing nothing and no "
+            "participant has an undeclared modeled loss; it is a candidate for each merchant's "
+            "own approval." + same,
+        )
+    elif hints:
+        action, why = (
+            "NEGOTIATE",
+            "nothing more can be paid on time under current terms, but a bounded discount "
+            "counteroffer could unlock an invoice",
+        )
+    elif bottlenecks:
+        action, why = (
+            "NO_ACTION",
+            "no feasible change pays more on time; the blocking reasons are listed",
+        )
+    else:
+        action, why = "NO_ACTION", "everything is already paid on time without coordination"
+
     return {
         "schema_version": OPPORTUNITY_SCHEMA,
         "status": "SIMULATED",
@@ -250,6 +310,8 @@ def analyze(net: Network) -> dict[str, Any]:
         "input_digest": plan["input_digest"],
         "focal_merchant": focal,
         "recommendation": {"action": action, "reason": why},
+        "decision": decision,
+        "conditions": conditions,
         "comparison": {
             "on_time_face_cents": {k: _cents_str(v) for k, v in sorted(on_time.items())},
             "incremental_vs_B0": _cents_str(gain_b0),
@@ -282,14 +344,58 @@ def analyze(net: Network) -> dict[str, Any]:
         "negotiation_hints": hints,
         "merchant_benefits": plan["merchant_benefits"],
         "flags": flags,
-        "execution": {"may_execute": False, "reason": "read-only simulation"},
+        "execution": {
+            "may_execute": False,
+            "reason": "read-only simulation: no payment authorization or spendable downstream "
+            "funds exist",
+        },
         "_plan": plan,
     }
 
 
+def _personal_recommendation(report: dict[str, Any], me: str, legs, benefit) -> dict[str, Any]:
+    """A recommendation derived for one merchant from its own data only."""
+    action = report["recommendation"]["action"]
+    if me == report["focal_merchant"]:
+        return report["recommendation"]
+    if not legs:
+        return {
+            "action": "NOTHING_FOR_YOU",
+            "reason": "you have no payment to make or receive in this plan",
+        }
+    net = benefit.get("net_benefit", 0)
+    pays = [x for x in legs if x["payer"] == me]
+    gets = [x for x in legs if x["payee"] == me]
+    parts = []
+    if gets:
+        parts.append(f"receive {len(gets)} payment(s)")
+    if pays:
+        parts.append(f"make {len(pays)} payment(s)")
+    base = (
+        f"you would {' and '.join(parts)} in this simulated plan; your modeled net benefit is "
+        f"{_usd(net)}; nothing happens without your own approval"
+    )
+    if net < 0 and me in report["decision"]["unjustified_modeled_losses"]:
+        return {
+            "action": "REVIEW_ECONOMICS",
+            "reason": base + "; you have not declared a benefit that offsets this loss",
+        }
+    if action in ("RECOMMEND_PLAN", "REVIEW_ECONOMICS"):
+        return {"action": "REVIEW_AND_DECIDE", "reason": base}
+    return {"action": action, "reason": base}
+
+
 def merchant_view(report: dict[str, Any], merchant_id: str) -> dict[str, Any]:
-    """What one merchant may see: its own legs, bottlenecks, benefit, hints and flags."""
-    mine = [x for x in report["plan_legs"] if merchant_id in (x["payer"], x["payee"])]
+    """What one merchant may see, derived separately from the network report.
+
+    Every merchant: its own legs, its own invoices' status, its own benefit, its own
+    approvals and flags. Only the payer of an invoice sees why that payment is blocked
+    (the reason reflects the payer's private cash and rules). Network totals, counts and
+    baseline comparisons go to the initiating (focal) merchant only.
+    """
+    me = merchant_id
+    focal = me == report["focal_merchant"]
+    mine = [x for x in report["plan_legs"] if me in (x["payer"], x["payee"])]
     visible = {x["leg_id"] for x in mine}
     legs = []
     for x in mine:
@@ -297,37 +403,91 @@ def merchant_view(report: dict[str, Any], merchant_id: str) -> dict[str, Any]:
         leg["depends_on_other_payments"] = bool(x["depends_on"])
         leg["depends_on"] = [d for d in x["depends_on"] if d in visible]
         legs.append(leg)
-    own_b = [b for b in report["bottlenecks"] if merchant_id in (b["debtor"], b["creditor"])]
-    return {
+    own_b = []
+    for b in report["bottlenecks"]:
+        if me == b["debtor"]:
+            own_b.append(b)
+        elif me == b["creditor"]:
+            own_b.append(
+                {
+                    **{
+                        k: b[k]
+                        for k in (
+                            "obligation_id",
+                            "debtor",
+                            "creditor",
+                            "face_cents",
+                            "open_cents",
+                            "due_at",
+                            "unlocked_by_plan",
+                        )
+                    },
+                    "without_coordination": "not paid on time",
+                    "reason_code": "UNLOCKED_BY_PLAN" if b["unlocked_by_plan"] else "PAYER_SIDE",
+                    "reason": "the recommended plan pays it on time"
+                    if b["unlocked_by_plan"]
+                    else "the payer cannot pay it on time; the reason is private to the payer",
+                }
+            )
+    benefit = report["merchant_benefits"].get(me, {}) if mine else {}
+    my_approvals = sum(1 for a in report["_plan"]["required_approvals"] if a["merchant_id"] == me)
+    my_flags = [f for f in report["flags"] if f["merchant_id"] == me]
+    if focal:
+        my_flags += [f for f in report["flags"] if f["merchant_id"] is None]
+    elif mine:
+        my_flags.append(
+            {
+                "code": "MY_APPROVALS_OUTSTANDING",
+                "merchant_id": me,
+                "detail": f"{my_approvals} of your approvals would be required; none recorded",
+            }
+        )
+        my_flags.append(
+            {
+                "code": "SIMULATED_PLAN",
+                "merchant_id": me,
+                "detail": "payments and receipts in this plan are simulated; nothing is "
+                "verified spendable",
+            }
+        )
+    view = {
         "schema_version": report["schema_version"],
         "status": report["status"],
-        "viewer": merchant_id,
+        "viewer": me,
         "plan_id": report["plan_id"],
-        "recommendation": report["recommendation"],
-        "my_actions": [
-            {"action": "pay" if x["payer"] == merchant_id else "receive", **x} for x in legs
-        ],
+        "recommendation": _personal_recommendation(report, me, legs, benefit),
+        "my_actions": [{"action": "pay" if x["payer"] == me else "receive", **x} for x in legs],
         "my_bottlenecks": own_b,
-        "other_bottlenecks_count": len(report["bottlenecks"]) - len(own_b),
-        "other_legs_count": len(report["plan_legs"]) - len(mine),
-        "my_benefit": report["merchant_benefits"].get(merchant_id, {}),
-        "my_negotiation_hints": [
-            h for h in report["negotiation_hints"] if h["payer"] == merchant_id
-        ],
-        "my_flags": [f for f in report["flags"] if f["merchant_id"] in (merchant_id, None)],
-        "comparison": (
-            report["comparison"]
-            if merchant_id == report["focal_merchant"]
-            else {"note": "network comparison is shown to the initiating merchant only"}
-        ),
+        "my_benefit": benefit,
+        "my_negotiation_hints": [h for h in report["negotiation_hints"] if h["payer"] == me],
+        "my_flags": my_flags,
         "execution": report["execution"],
     }
+    if focal:
+        d = report["decision"]
+        view["decision"] = {  # other participants' nets reflect their private inputs
+            "feasible": d["feasible"],
+            "advantage": d["advantage"],
+            "buyer_net_benefit_cents": d["buyer_net_benefit_cents"],
+            "participants_with_undeclared_losses": len(d["unjustified_modeled_losses"]),
+            "uncertainty": d["uncertainty"],
+            "consent": d["consent"],
+        }
+        view["conditions"] = report["conditions"]
+        view["comparison"] = report["comparison"]
+        view["other_bottlenecks_count"] = len(report["bottlenecks"]) - len(own_b)
+        view["other_legs_count"] = len(report["plan_legs"]) - len(mine)
+    else:
+        view["conditions"] = [report["conditions"][0]] if mine else []
+    return view
 
 
 def facts(view: dict[str, Any]) -> list[tuple[str, str]]:
     out = [
-        "This analysis is a SIMULATION; nothing has been paid, approved or changed.",
-        f"Recommendation: {view['recommendation']['action']} - {view['recommendation']['reason']}.",
+        "This analysis is a SIMULATION; nothing has been paid, approved or changed, and no "
+        "approval or spendable downstream funds exist yet.",
+        f"Recommendation for you: {view['recommendation']['action']} - "
+        f"{view['recommendation']['reason']}.",
     ]
     for a in view["my_actions"]:
         out.append(
@@ -355,8 +515,10 @@ def facts(view: dict[str, Any]) -> list[tuple[str, str]]:
         out.append(f"Your modeled net benefit: {_usd(b['net_benefit'])}.")
     for f in view["my_flags"]:
         out.append(f"Flag {f['code']}: {f['detail']}.")
-    c = view["comparison"]
-    if "incremental_vs_B0" in c:
+    for c in view.get("conditions", []):
+        out.append(f"Condition: {c}.")
+    c = view.get("comparison")
+    if c:
         out.append(
             f"Compared with doing nothing, {_usd(_num(c['incremental_vs_B0']))} more invoice face "
             f"is paid on time; compared with paying earliest-due-first, "

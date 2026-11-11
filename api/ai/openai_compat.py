@@ -91,22 +91,42 @@ class OpenAICompatibleAdapter:
             },
         }
         estimate = self._prices.cost(estimate_tokens(system + user) * 2, max_tokens)
-        self._spend.check(estimate)
+        reservation = self._spend.reserve(estimate)  # atomic; refuses before any request
         headers = {"Authorization": f"Bearer {self._key.get_secret_value()}"}
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
                 resp = client.post(self._url, json=body, headers=headers)
+        except (httpx.ConnectError, httpx.UnsupportedProtocol) as exc:
+            self._spend.release(reservation)  # never reached the provider
+            raise LLMUnavailableError(f"model call failed: {type(exc).__name__}") from None
         except httpx.HTTPError as exc:
+            # outcome unknown (timeout, dropped connection): keep the full estimate
+            self._spend.commit(
+                reservation,
+                cost=estimate,
+                model=self.model,
+                prompt_version=prompt_version,
+                tokens=(0, 0),
+                note=f"unknown outcome: {type(exc).__name__}",
+            )
             raise LLMUnavailableError(f"model call failed: {type(exc).__name__}") from None
         if resp.status_code != 200:
+            self._spend.release(reservation)
             raise LLMUnavailableError(f"model call returned HTTP {resp.status_code}")
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
         usage = data.get("usage") or {}
         tin = int(usage.get("prompt_tokens") or estimate_tokens(system + user))
         tout = int(usage.get("completion_tokens") or max_tokens)
         cost = self._prices.cost(tin, tout)
-        self._spend.record(
-            model=self.model, prompt_version=prompt_version, cost=cost, tokens=(tin, tout)
+        self._spend.commit(
+            reservation,
+            cost=cost,
+            model=self.model,
+            prompt_version=prompt_version,
+            tokens=(tin, tout),
         )
         call = ModelCall(
             provider=self.provider,

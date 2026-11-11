@@ -74,7 +74,7 @@ def plan_facts(record: dict[str, Any], viewer: str) -> list[tuple[str, str]]:
     if view["my_approvals"]:
         acts = sorted({a["action"].replace("_", " ") for a in view["my_approvals"]})
         facts.append(f"Your approvals still required: {', '.join(acts)}.")
-    if view["downstream_legs_count"]:
+    if view["downstream_legs_count"] and viewer == record["focal_merchant"]:
         facts.append(
             f"{view['downstream_legs_count']} other payment(s) in the plan do not involve you."
         )

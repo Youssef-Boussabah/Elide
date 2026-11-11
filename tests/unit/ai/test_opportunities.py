@@ -21,10 +21,21 @@ def codes(report):
     return {(f["code"], f["merchant_id"]) for f in report["flags"]}
 
 
-def test_two_candidates_recommends_the_plan_and_reports_honest_comparisons():
+def test_two_candidates_needs_economic_review_and_reports_honest_comparisons():
     r = analyze(fx.network_two_candidates())
     assert r["schema_version"] == OPPORTUNITY_SCHEMA and r["status"] == "SIMULATED"
-    assert r["recommendation"]["action"] == "RECOMMEND_PLAN"
+    # feasible and +$2,700 vs doing nothing, but the supplier's -$10 is an undeclared loss
+    assert r["recommendation"]["action"] == "REVIEW_ECONOMICS"
+    assert "not a network-aware improvement" in r["recommendation"]["reason"]  # B1 == B4
+    d = r["decision"]
+    assert d["feasible"] is True
+    assert d["advantage"]["network_awareness_needed"] is False
+    assert d["buyer_net_benefit_cents"] == 370
+    assert d["participant_net_benefit_cents"]["food_supplier"] == -1000
+    assert d["unjustified_modeled_losses"] == ["food_supplier"]
+    assert d["consent"] == {"approvals_required": 4, "approvals_recorded": 0}
+    assert any("no approval is recorded" in c for c in r["conditions"])
+    assert any("no downstream funds are verified spendable" in c for c in r["conditions"])
     c = r["comparison"]
     assert (c["incremental_vs_B0"], c["incremental_vs_B1"], c["incremental_vs_B3"]) == (
         "270000",
@@ -125,11 +136,10 @@ def test_merchant_view_is_privacy_scoped():
     carrier = merchant_view(r, "carrier")
     text = json.dumps(carrier)
     assert "buyer" not in text and "pack_001" not in text and "50000" not in text
-    assert carrier["comparison"] == {
-        "note": "network comparison is shown to the initiating merchant only"
-    }
+    assert "comparison" not in carrier and "decision" not in carrier
+    assert carrier["recommendation"]["action"] == "REVIEW_AND_DECIDE"
     assert {a["action"] for a in carrier["my_actions"]} == {"pay", "receive"}
-    assert carrier["other_bottlenecks_count"] == 2
+    assert "other_bottlenecks_count" not in carrier and "2,700" not in text
     buyer = merchant_view(r, "buyer")
     assert "mechanic" not in json.dumps(buyer) and "carrier" not in json.dumps(buyer)
     assert buyer["comparison"]["incremental_vs_B3"] == "85000"
@@ -198,3 +208,20 @@ def test_api_opportunities_and_local_only_model_routes():
         ).status_code
         == 200
     )
+
+
+def test_positive_sum_and_timing_remain_recommended_and_conditional():
+    for net in (fx.network_positive_sum(), fx.network_timing_matters()):
+        r = analyze(net)
+        assert r["recommendation"]["action"] == "RECOMMEND_PLAN"
+        assert r["decision"]["unjustified_modeled_losses"] == []
+        assert "approval" in r["recommendation"]["reason"]
+        assert r["execution"]["may_execute"] is False
+    assert analyze(fx.network_timing_matters())["decision"]["advantage"]["network_awareness_needed"]
+
+
+def test_declared_acceptable_loss_is_not_flagged_for_review():
+    pol = fx.supplier_policy(min_receipt_net_benefit_cents=-1000)  # accepts up to $10 loss
+    r = analyze(fx.network_two_candidates(supplier_policy=pol))
+    assert r["recommendation"]["action"] == "RECOMMEND_PLAN"
+    assert r["decision"]["unjustified_modeled_losses"] == []
