@@ -15,6 +15,7 @@ secrets/
 client_secret*
 .paypal/
 .netrc
+.elide/
 
 # --- Python ---
 .venv/

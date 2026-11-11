@@ -1,0 +1,80 @@
+{
+ "evidence_class": "provider observation (real model calls)",
+ "at": "2026-11-11T20:55:38+00:00",
+ "provider": "nebius",
+ "base_url": "https://api.tokenfactory.nebius.com/v1/",
+ "models_listed": [
+  "MiniMaxAI/MiniMax-M3",
+  "MiniMaxAI/MiniMax-M3.1-Flash",
+  "NousResearch/Hermes-4-405B",
+  "Qwen/Qwen3-235B-A22B-Instruct-2507",
+  "Qwen/Qwen3-30B-A3B-Instruct-2507",
+  "Qwen/Qwen3-Embedding-8B",
+  "Qwen/Qwen3.8-27B",
+  "deepseek-ai/DeepSeek-V4-Pro-0813",
+  "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  "google/gemma-3-27b-it",
+  "meta-models/muse-spark-open",
+  "moonshotai/Kimi-K3",
+  "moonshotai/Kimi-K3.1-Pro",
+  "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+  "nvidia/Nemotron-3-Ultra-550b-a55b",
+  "nvidia/Nemotron-3.5-Super-VL",
+  "nvidia/Nemotron-3_5-Lightning",
+  "nvidia/nemotron-3-super-120b-a12b",
+  "openai/gpt-oss-120b",
+  "reflection/beam",
+  "zai-org/GLM-5.2",
+  "zai-org/GLM-5.3",
+  "zai-org/GLM-5.3-Flash"
+ ],
+ "probes": [
+  {
+   "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+   "listed": true,
+   "probe": "ok",
+   "value": {
+    "amount": "$600",
+    "currency": "$"
+   },
+   "call": {
+    "provider": "nebius",
+    "model": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+    "prompt_version": "probe-v1",
+    "mocked": false,
+    "label": "REAL_MODEL_OUTPUT",
+    "context_sha256": "a31c0b3b744fe42e68cda2d84d77da36b307fb7fccf0ef816e8efc7691b465f1",
+    "input_tokens": 33,
+    "output_tokens": 14,
+    "estimated_cost_usd": "0.000023",
+    "request_id": "chatcmpl-3f729dfd-27c0-4361-915a-0e7e21abf2ee"
+   }
+  },
+  {
+   "model": "openai/gpt-oss-120b",
+   "listed": true,
+   "probe": "failed: model returned no text content"
+  },
+  {
+   "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+   "listed": true,
+   "probe": "ok",
+   "value": {
+    "amount": "600",
+    "currency": "USD"
+   },
+   "call": {
+    "provider": "nebius",
+    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "prompt_version": "probe-v1",
+    "mocked": false,
+    "label": "REAL_MODEL_OUTPUT",
+    "context_sha256": "a31c0b3b744fe42e68cda2d84d77da36b307fb7fccf0ef816e8efc7691b465f1",
+    "input_tokens": 33,
+    "output_tokens": 15,
+    "estimated_cost_usd": "0.000012",
+    "request_id": "chatcmpl-e1cd224a-9688-4a26-91d2-d17244d179c2"
+   }
+  }
+ ]
+}

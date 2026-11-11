@@ -11,6 +11,8 @@ secrets, real emails, names, or hosted payer URLs.
   solve times are machine-specific); `*_hardening.*` is the post-review addendum (adds
   discharged metrics and constructed examples, reproduces the original results);
   `hardening_reproduction_*.txt` records the plan-tampering defects before the fix.
+- `phase3/` — AI evaluation (`ai_eval_mock_*` = reference extractions, not model evidence;
+  `ai_eval_live_*` / `llm_probe_*` = real model calls) from `scripts/run_ai_eval.py`.
 - `**/raw/` and `**/unredacted/` are git-ignored scratch locations.
 
 Evidence class must be stated: Specified / Synthetic-tested / Sandbox-verified / Pilot-validated.
