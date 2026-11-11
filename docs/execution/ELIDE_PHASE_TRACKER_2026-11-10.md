@@ -1,12 +1,12 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete** (owner-reviewed). P1 **complete** (owner-approved for the synthetic simulation and deterministic financial-model scope; merged to `main` at `41c0f9f`, CI run #7 green). P2 **implemented and hardened on `feat/p2-liquidity-optimizer`, pending final approval** (see *P2 detail* and *P2 hardening*); not merged; no P3 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 in progress on `feat/p3-ai-policy-negotiation`. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
 | P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | **Complete** (owner-approved 2026-11-11; merged `41c0f9f`): 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests; CI run #7 on `main` green | pytest / property test output |
-| P2 | Exact optimizer agrees with separate verifier and fair baselines | **Implemented, pending final approval** on `feat/p2-liquidity-optimizer`: hardened after review; 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
-| P3 | Live policy parsing and bounded offer proposal safely gated | Not started | Prompt version + schema result + injection tests |
+| P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
+| P3 | Live policy parsing and bounded offer proposal safely gated | In progress on `feat/p3-ai-policy-negotiation` | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
 | P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
@@ -506,6 +506,14 @@ Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.
 | `pytest` (full) | **487 passed, 0 failed, 0 skipped**, 1 known Starlette warning |
 | Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / 3 passed / ok |
 
+### P2 approval and merge (2026-11-11)
+
+- Owner final approval of `04663db15be089d89d31090adb928d1ddb09763c` (synthetic research scope).
+- CI on the approved commit: run #11 (id 42944314488): **success** (backend incl. `alembic check`,
+  frontend).
+- Merge: `git merge --no-ff feat/p2-liquidity-optimizer` into `main` → **`7bb068c`** (no history
+  rewrite; branch kept; synthetic benchmark and Sandbox evidence unchanged).
+
 ### Remaining limitations / risks
 - Whole-invoice legs only: no partial payments or instalments.
 - Acceptance is per leg; no benefit sharing between merchants.
@@ -607,3 +615,5 @@ Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.
   positive-sum examples (labelled), benchmark addendum reproducing 320/320. 487 tests
   pass. No PayPal calls, no credential changes, no approvals created. Not merged.
   **Next task:** owner final approval of P2 (do not start P3).
+- 2026-11-11 (Claude Code, Opus 5.5): owner approved P2 (`04663db`, CI run #11). Merged into
+  `main` with `--no-ff` → `7bb068c`. **Next task:** P3 on `feat/p3-ai-policy-negotiation`.
