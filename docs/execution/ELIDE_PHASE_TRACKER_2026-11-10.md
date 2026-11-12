@@ -1098,3 +1098,12 @@ original `cd40638+dirty` provenance.
   frontend / 9 Playwright pass. No PayPal mutation, no model call. Not merged; the worker is
   not enabled against PayPal. **Next task:** owner review; the Sandbox operation only after
   explicit authorization.
+- 2026-11-12 (Claude Code, Opus 5.5): owner approved `0349162` (CI run #26) for the Sandbox
+  validation preflight; still no provider mutation authorized. Created the isolated pilot
+  database `elide_sandbox_pilot` (migrated to 0007, `pilot_001` seeded). The read-only
+  preflight `scripts/p5_preflight.py` stopped once, on a defect in its own static check
+  (kept: `sandbox_preflight_20261112T134451Z.json`); after the fix all preconditions pass
+  (`sandbox_preflight_20261112T134530Z.json`, `evidence/phase5/sandbox_preflight_2026-11-12.md`).
+  PayPal calls: OAuth and a read-only invoice list. The offer expires 2026-11-14T13:13Z.
+  **Next task:** wait for explicit owner authorization of the specific operation; then run
+  steps A-F of the preflight report. Do not merge P5.
