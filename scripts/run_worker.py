@@ -20,12 +20,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy import create_engine
 
-from api.config import get_settings  # noqa: E402
-from api.execution.runtime import build_provider, build_runtime, worker_kinds  # noqa: E402
-from api.execution.service import handlers_for, on_dead  # noqa: E402
-from api.workers.outbox import RetryPolicy, run_once  # noqa: E402
+from api.config import get_settings
+from api.execution.runtime import build_provider, build_runtime, worker_kinds
+from api.execution.service import handlers_for, on_dead
+from api.workers.outbox import RetryPolicy, run_once
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         for job, res in done:
             print(
-                f"  message {job.id} {job.kind} intent={job.intent_id}: {res.action} {res.error or ''}"
+                f"  message {job.id} {job.kind} intent={job.intent_id}: "
+                f"{res.action} {res.error or ''}"
             )
         if args.once:
             return 0
