@@ -1,5 +1,7 @@
 # P5 controlled Sandbox operation: proposal for owner authorization
 
+> **Status update (2026-11-12, appended; the text below is the historical record as written).** The owner later authorized exactly this one operation. It was performed and verified (`evidence/phase5/sandbox_payment_result_2026-11-12.md`), corrected and re-verified in the final review (ADR-0012 §17), and P5 was approved at `f26e536` and merged to `main` at `f7e7974` (CI run #36). PayPal-mutating execution remains disabled.
+
 **Status: NOT AUTHORIZED, NOT PERFORMED.** Nothing in this file has been executed against
 PayPal. It describes the one Sandbox operation that would produce the P5 gate evidence
 (ADR-0012 acceptance A13), so the owner can authorize it, change it, or refuse it.

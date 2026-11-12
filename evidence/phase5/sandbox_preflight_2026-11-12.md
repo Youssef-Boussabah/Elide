@@ -1,5 +1,7 @@
 # P5 Sandbox pilot preflight (2026-11-12): ALL PRECONDITIONS PASS. NOT AUTHORIZED. NOT EXECUTED
 
+> **Status update (2026-11-12, appended; the text below is the historical record as written).** The owner later authorized exactly this one operation. It was performed and verified (`evidence/phase5/sandbox_payment_result_2026-11-12.md`), corrected and re-verified in the final review (ADR-0012 §17), and P5 was approved at `f26e536` and merged to `main` at `f7e7974` (CI run #36). PayPal-mutating execution remains disabled.
+
 Owner instruction: "Phase 5 approved for Sandbox validation preflight". No provider-mutating
 call was made. `PAYMENTS_EXECUTION_ENABLED` stays `false` and `PAYMENT_PROVIDER` stays
 `none` until the owner explicitly authorizes this specific operation.

@@ -406,7 +406,7 @@ Implemented as designed, with these decisions and divergences:
 
 **Not done (blockers and gaps):**
 - A13 (one new Sandbox payment) needs owner authorization:
-  `evidence/phase5/sandbox_operation_gate_2026-11-12.md`.
+  `evidence/phase5/sandbox_operation_gate_2026-11-12.md`. *(Done later the same day under owner authorization and accepted; see A13 in §11 and §17.)*
 - A14 (verified webhook delivery) needs a public HTTPS endpoint and a registered webhook.
 - Refund posting is detection only (`REFUND_OBSERVED` exception), pending a real refund.
 - No Playwright test drives the mock provider end to end (the mock lives in-process; a
@@ -729,3 +729,26 @@ Still open, not changed by this review:
 - refund posting (detection only);
 - ADR-0013 (strict xfail unchanged);
 - Transaction Search payer identity (§17.2, needs authorization).
+
+### 17.7 Approval and accepted scope (2026-11-12)
+
+The owner approved P5 at `f26e536` (CI run #35) and merged it to `main` at `f7e7974`
+(CI run #36).
+
+**Demonstrated:**
+- independent merchant consent;
+- a verified payment plan;
+- one real PayPal **Sandbox** invoice, created and delivered;
+- a human payment on PayPal's hosted page;
+- independently retrieved provider confirmation;
+- accounting reconciliation with independent verification (checker v2);
+- idempotent replay for the tested scenarios.
+
+**Not demonstrated, and not to be claimed:**
+- production merchant payments;
+- arbitrary third-party merchant PayPal integration;
+- verified source-account identity of the payer;
+- spendable downstream liquidity;
+- live webhook delivery;
+- complete refund, reversal and dispute accounting;
+- real merchant financial performance or commercial impact.

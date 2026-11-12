@@ -1,5 +1,5 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 **implemented on `feat/p5-paypal-execution` (synthetic-tested; read-only Sandbox-verified), conditionally approved by the owner for the mock-tested architecture (review of `613d72f`, CI run #25); gate-review corrections applied; one owner-authorized Sandbox payment made, verified and accepted by the owner (2026-11-12); final-review corrections (ADR-0012 §17) applied; awaiting merge approval**. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 **complete** for its tested Sandbox scope: owner-approved at `f26e536` (CI run #35), merged to `main` at `f7e7974` (CI run #36 green); PayPal-mutating execution stays disabled. Next: ADR-0013 on `feat/adr-0013-agreed-terms` (not started)**. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | **Complete** (owner-approved `dc5949e`, CI run #17; merged `3100091`, CI run #18): real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled development cases; 633 tests pass | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | **Complete** (owner-approved `7d971d9`, CI run #21; merged `1ed309a`, CI run #22): 689 backend, 18 frontend, 5 Playwright tests pass; synthetic scope only, outbox held | E2E run and auth isolation test |
-| P5 | Actual PayPal payer payment + provider GET + safe replay | **Sandbox payment accepted by the owner; final-review corrections applied, pending merge approval** (not merged): invoice `INV2-HQXZ-SCNE-RKTV-VMMT` paid (USD 24.00; capture `82L451107A123522J`, fee USD 1.00, credited CAD 31.57), booked once, replay added nothing. Final review (ADR-0012 §17, migration 0008): independent checker v2 compares every journal account with PayPal's own figures; the payer's source-account debit is NOT verified (merchant attestation available); `settlement_verification` replaces the `check_sha256` placeholder; the pilot re-verified by v2 from read-only GETs (passed). Open: verified webhook (A14), refund posting, INV-1, ADR-0013, Transaction Search payer identity | Redacted receipt + journal + webhook replay |
+| P5 | Actual PayPal payer payment + provider GET + safe replay | **Complete** for the tested Sandbox scope (owner-approved `f26e536`, CI run #35; merged `f7e7974`, CI run #36): one owner-authorized Sandbox invoice `INV2-HQXZ-SCNE-RKTV-VMMT` created, sent and paid on PayPal's hosted page (USD 24.00; capture `82L451107A123522J`), provider GET confirmation, booked once, independently verified (checker v2), replay added nothing. Not demonstrated: production payments, payer source-account identity, spendable downstream liquidity, live webhooks (A14), refund/reversal accounting, merchant economic impact. Open: INV-1, ADR-0013 | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
 | P7 | Public license/repo, working demo, video, submission | Not started | Public links, release SHA, submission receipt |
 
@@ -896,11 +896,12 @@ idempotency uses deterministic invoice numbers, search-based lookup and GET-befo
   tests (mock provider).
 - **Sandbox-verified (read only):** the probe above (P0 resources re-read; nothing new).
 - **Not yet evidenced:** a new Sandbox payment through P5 (A13), verified webhook delivery
-  (A14), refund posting.
+  (A14), refund posting. *(A13 was later done and accepted, see "P5 approval and merge";
+  A14 and refund posting remain open.)*
 
 ### Blockers and owner actions
 1. **Authorize (or refuse) the controlled Sandbox operation** in the gate file (severity:
-   P5 gate blocker).
+   P5 gate blocker). *(Resolved: authorized, performed and accepted on 2026-11-12.)*
 2. **Webhooks:** decide on a public HTTPS endpoint and register a webhook (severity: medium;
    reconciliation works by polling without it).
 3. Refund posting waits for an observed Sandbox refund (severity: low for the gate).
@@ -1015,6 +1016,53 @@ targeted corrections. Merging is not allowed. ADR-0012 §17 has the design; migr
 | Playwright (local, harness app with the mock provider) | **10 passed** |
 | Secret scan of the 22 changed/new files (values from `.env`, host name) | 0 hits |
 | PayPal / model / money | 4 read-only GETs in total (one dry run, one recorded run, invoice + capture each); no mutating call, no worker, no model call |
+
+### P5 approval and merge (2026-11-12)
+
+**Approval and pre-merge state**
+- The owner approved `f26e53661626176b9b69bdb4aa3b4a3abdd9283d` after the final
+  architectural review.
+  - CI on the approved commit: [run #35](https://github.com/Youssef-Boussabah/Elide/actions/runs/43291173649)
+    (backend, frontend, e2e: success).
+  - Local results on that commit: `pytest` 851 passed, 1 xfailed (ADR-0013); frontend 29;
+    Playwright 10.
+- Pre-merge checks:
+  - the working tree was clean;
+  - `feat/p5-paypal-execution` and `origin` were both at the approved SHA;
+  - `main` (`68b2268`) did not contain it.
+
+**Merge**
+- `git merge --no-ff feat/p5-paypal-execution` into `main` gave
+  **`f7e79744ee9c49ed1f3cbc34219166a567d16933`**.
+- `git diff f26e536 f7e7974` is empty: the merged tree is identical to the approved commit.
+- No rebase, squash or history rewrite; the feature branch is kept.
+- [CI run #36](https://github.com/Youssef-Boussabah/Elide/actions/runs/43293808901) on
+  `main`: **success** (backend, frontend, e2e jobs, read from the GitHub API). The test
+  counts are the local counts above, on the identical tree.
+
+**Preserved unchanged:** the pilot evidence and provider responses, the failure
+reproductions (`review_reproduction_20261112.txt`, `gate_review_reproduction_*`), the
+fixtures, the audit records and the historical settlement. Nothing was rebooked.
+
+**Verified capabilities (evidence class):**
+- independent merchant consent and a verified plan (Synthetic-tested; used for the pilot);
+- one Sandbox invoice created and delivered, a human hosted payment and provider
+  confirmation by GET (**Sandbox-verified**);
+- accounting reconciliation with independent verification, checker v2 (Sandbox-verified for
+  the pilot, Synthetic-tested otherwise);
+- idempotent replay for the tested scenarios (Sandbox-verified for the pilot replay).
+
+**Not demonstrated:**
+- production merchant payments;
+- arbitrary third-party merchant PayPal integration;
+- verified payer source-account identity;
+- spendable downstream liquidity;
+- live webhook delivery;
+- complete refund, reversal and dispute accounting;
+- real merchant financial performance or commercial impact.
+
+**Status updates:** the historical gate and preflight files received a status banner; their
+bodies are unchanged.
 
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
@@ -1253,3 +1301,11 @@ targeted corrections. Merging is not allowed. ADR-0012 §17 has the design; migr
     financial row changed.
   - No mutating PayPal call, no worker, no model call. Not merged.
   - **Next task:** owner's final merge approval of P5.
+- 2026-11-12 (Claude Code, Opus 5.5): the owner approved P5 (`f26e536`, CI run #35).
+  - Merged into `main` with `--no-ff` as `f7e7974` (tree identical to the approved commit);
+    CI run #36 on `main` green.
+  - Acceptance language updated; historical gate and preflight files received a status
+    banner.
+  - No PayPal call, no model call; mutating execution disabled.
+  - **Next task:** ADR-0013 on `feat/adr-0013-agreed-terms`; its plan
+    and the separate hardening roadmap are prepared on that branch for owner review.
