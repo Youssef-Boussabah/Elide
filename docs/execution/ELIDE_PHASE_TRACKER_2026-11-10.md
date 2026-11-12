@@ -735,6 +735,8 @@ Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.
 | New P4 integration tests (PostgreSQL, over HTTP, separate sessions) | 24 tests; listed below |
 | New contract and unit tests | Auth sweep over all `/v1/m` routes (401 without a session); roles, Argon2id, CSRF derivation, the audit secret guard, file-guard settlement |
 | Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / **13 passed** (including 6 jsdom workflow tests) / ok |
+| GitHub Actions [run #19](https://github.com/Youssef-Boussabah/Elide/actions/runs/43133793493) on `c5d9f0a` | **success**: backend (ruff, `alembic upgrade` + `alembic check`, pytest with PostgreSQL) and frontend (typecheck, lint, test, build) |
+| Secret scan of all files changed vs `main` (values from `.env` and generated TEST passwords) | 0 hits in 68 files; no `.env*`, `raw/` or `.local/` paths |
 | Browser workflow (Claude in Chrome, local) | Buyer counters, supplier accepts from a separate login, buyer approves, held intent created. Cross-tenant 404, keyboard skip link, no console errors. 2 defects found and fixed with regression tests |
 
 The 24 integration tests cover:
