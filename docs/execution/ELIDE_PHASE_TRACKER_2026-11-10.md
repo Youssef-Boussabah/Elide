@@ -888,6 +888,7 @@ idempotency uses deterministic invoice numbers, search-based lookup and GET-befo
 | New backend tests | 41 PostgreSQL integration (happy path, 34 failure/concurrency/adversarial cases, 6 webhook/checker cases) + 34 unit |
 | Frontend `typecheck` / `lint` / `test` | exit 0 / exit 0 / **24 passed** (18 previous + 6 new) |
 | Playwright (local, real stack, migration 0006) | **5 passed** (the P4 suite, unchanged) |
+| GitHub Actions [run #24](https://github.com/Youssef-Boussabah/Elide/actions/runs/43201888837) on `95766f4` | **success**: backend (ruff, format, `alembic upgrade` + `alembic check`, pytest with PostgreSQL), frontend, e2e (Playwright). Main's tracker commit `68b2268`: run #23 success |
 | Read-only Sandbox probe (`evidence/phase5/readonly_probe_20261112T103417Z.json`) | OAuth, invoice GET, `search-invoices`, capture GET: all 200; P0 settlement reproduced exactly; strict PAID check 0 problems; search found exactly the P0 invoice; payee fingerprint = P0 record. Commit `cd40638+dirty` (evidence-guard fix uncommitted) |
 
 ### Evidence classes
