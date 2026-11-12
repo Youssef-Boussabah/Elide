@@ -161,7 +161,7 @@ export function PlanPage({ merchant, membership }: PageProps) {
                     <td>{i.payee_merchant}</td>
                     <td>{money(i.amount_cents)}</td>
                     <td>
-                      <StateLabel state={i.status === "awaiting_payer_action" ? "INTENT_CREATED_NOT_SENT" : i.status} />
+                      <StateLabel state={i.status === "approved" ? "INTENT_CREATED_NOT_SENT" : i.status} />
                     </td>
                     <td>
                       <Badge tone="warn">{i.execution === "disabled" ? "held: no PayPal call" : i.execution}</Badge>

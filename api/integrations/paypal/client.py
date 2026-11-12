@@ -1,14 +1,16 @@
 """Minimal PayPal REST client for merchant-owned Invoicing v2 (Sandbox only).
 
-Scope (Phase 0 feasibility): OAuth client-credentials token, list/generate-number/create/
-send/get invoices. It never pays, captures, refunds or marks invoices paid, and it is not
-reachable by the LLM adapter.
+Scope: OAuth client-credentials token; list/generate-number/create/send/get/search/cancel
+invoices (P0, P5); read captures and refunds; PayPal's webhook-signature postback (P5). It
+never pays, captures, refunds or marks invoices paid, and it is not reachable by the LLM
+adapter.
 
 Responses are returned as `ProviderResponse` (status, body, PayPal debug id) instead of
 raising on 4xx, so the caller can record exact provider behavior, including 403s, as
 evidence. A 403 is an access boundary to record, not something to work around.
 """
 
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -70,6 +72,14 @@ class PayPalSandboxClient:
 
     def close(self) -> None:
         self._http.close()
+
+    @property
+    def client_id(self) -> str:
+        """The (non-secret) client id, for fingerprinting only; never logged."""
+        return self._client_id
+
+    def invalidate_token(self) -> None:
+        self._token = None
 
     # -- auth -------------------------------------------------------------------------
     def authenticate(self) -> ProviderResponse:
@@ -202,10 +212,68 @@ class PayPalSandboxClient:
     def get_invoice(self, invoice_id: str) -> ProviderResponse:
         return self._call("get_invoice", "GET", f"/v2/invoicing/invoices/{invoice_id}")
 
+    def search_invoices(self, invoice_number: str) -> ProviderResponse:
+        """Read-only search (POST by PayPal's design) by our deterministic invoice number."""
+        return self._call(
+            "search_invoices",
+            "POST",
+            "/v2/invoicing/search-invoices",
+            json={"invoice_number": invoice_number},
+            params={"page": 1, "page_size": 10, "total_required": "true"},
+            content_type_json=True,
+        )
+
+    def cancel_invoice(self, invoice_id: str, request_id: str) -> ProviderResponse:
+        """Cancel a SENT invoice so it can no longer be paid (204 on success)."""
+        return self._call(
+            "cancel_invoice",
+            "POST",
+            f"/v2/invoicing/invoices/{invoice_id}/cancel",
+            json={"send_to_invoicer": False, "send_to_recipient": False},
+            request_id=request_id,
+            content_type_json=True,
+        )
+
     # -- payments v2 (read-only) --------------------------------------------------------
     def get_capture(self, capture_id: str) -> ProviderResponse:
         """Read a captured payment (fee/net/exchange breakdown). Never captures or refunds."""
         return self._call("get_capture", "GET", f"/v2/payments/captures/{capture_id}")
+
+    def get_refund(self, refund_id: str) -> ProviderResponse:
+        """Read a refund resource. Never refunds."""
+        return self._call("get_refund", "GET", f"/v2/payments/refunds/{refund_id}")
+
+    # -- webhooks -------------------------------------------------------------------------
+    def verify_webhook_signature(
+        self, headers: dict[str, str], raw_body: bytes, webhook_id: str
+    ) -> ProviderResponse:
+        """PayPal's postback verification. The event is embedded **verbatim**: PayPal
+        requires the webhook event to be posted back exactly as it was received."""
+        meta = {
+            "auth_algo": headers["paypal-auth-algo"],
+            "cert_url": headers["paypal-cert-url"],
+            "transmission_id": headers["paypal-transmission-id"],
+            "transmission_sig": headers["paypal-transmission-sig"],
+            "transmission_time": headers["paypal-transmission-time"],
+            "webhook_id": webhook_id,
+        }
+        prefix = json.dumps(meta, separators=(",", ":"))[:-1]
+        content = prefix.encode() + b',"webhook_event":' + raw_body.strip() + b"}"
+        headers_out = self._auth_headers()
+        headers_out["Content-Type"] = "application/json"
+        start = time.monotonic()
+        resp = self._http.post(
+            "/v1/notifications/verify-webhook-signature", content=content, headers=headers_out
+        )
+        return ProviderResponse(
+            "verify_webhook_signature",
+            "POST",
+            "/v1/notifications/verify-webhook-signature",
+            resp.status_code,
+            _json(resp),
+            resp.headers.get("paypal-debug-id"),
+            elapsed_ms=_ms(start),
+        )
 
 
 def new_request_id() -> str:

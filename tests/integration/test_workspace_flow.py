@@ -185,7 +185,7 @@ def test_full_negotiation_and_payment_authorization_flow(workspace):
     pi = buyer.post("/v1/m/buyer/payment-intents", {"authorization_id": auth_id}, key="pi-key-1")
     assert pi.status_code == 200, pi.text
     body = pi.json()
-    assert body["status"] == "awaiting_payer_action" and body["execution"] == "disabled"
+    assert body["status"] == "approved" and body["execution"] == "disabled"
     assert body["money_moved"] is False and body["provider_confirmed"] is False
     assert body["funds_usable"] is False
     replay = buyer.post(

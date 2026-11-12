@@ -44,6 +44,14 @@ capacity_evidence = Table(
         nullable=False,
         server_default=text("'{}'::varchar(80)[]"),
     ),
+    # Outgoing payments already reflected in this observed balance (0006, ADR-0012 §4.5):
+    # a settled outflow's commitment is released only by evidence that lists it here.
+    Column(
+        "included_outflow_ids",
+        ARRAY(String(80)),
+        nullable=False,
+        server_default=text("'{}'::varchar(80)[]"),
+    ),
     CheckConstraint("currency IN ('USD', 'CAD')", name="ck_capacity_evidence_currency"),
     CheckConstraint(
         "verified_spendable_cents >= 0 AND protected_reserve_cents >= 0 "
@@ -82,7 +90,18 @@ capacity_commitment = Table(
     Column("amount_cents", BigInteger, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("released_at", DateTime(timezone=True)),
+    # 0006: a 'reservation' holds cash for a pending payment; a 'settled_outflow' keeps a
+    # paid amount committed until newer balance evidence includes it (ADR-0012 §4.5).
+    Column("kind", String(20), nullable=False, server_default=text("'reservation'")),
+    Column("release_reason", String(120)),
     CheckConstraint("currency = 'USD'", name="ck_capacity_commitment_usd"),
+    CheckConstraint(
+        "kind IN ('reservation', 'settled_outflow')", name="ck_capacity_commitment_kind"
+    ),
+    CheckConstraint(
+        "release_reason IS NULL OR released_at IS NOT NULL",
+        name="ck_capacity_commitment_release_reason",
+    ),
     CheckConstraint("amount_cents > 0", name="ck_capacity_commitment_positive"),
     CheckConstraint(
         "released_at IS NULL OR released_at >= created_at", name="ck_capacity_commitment_release"

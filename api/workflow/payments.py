@@ -13,10 +13,12 @@
    merchant lock and cannot double-spend);
 6. the operation key is new, or replays the identical request.
 
-It then writes `payment_intent` (`awaiting_payer_action`) and a HELD `outbox_message`.
-Nothing in P4 dispatches the outbox: `PAYMENTS_EXECUTION_ENABLED` is false and no
-worker exists. The model, the browser and the optimizer have no path to this function
-except through an authenticated payer request.
+It then writes `payment_intent` (`approved`, ADR-0012 §4.1) and an `outbox_message`.
+The message is `pending` (dispatchable by the P5 worker) only if execution is enabled,
+the reserved cash is not synthetic and both parties hold an active PayPal Sandbox
+binding; otherwise it is `held` and `status_reason` says why. The worker revalidates
+everything again before any provider call. The model, the browser and the optimizer
+have no path to this function except through an authenticated payer request.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from sqlalchemy import Connection, insert, select
 from api.app.auth import service as auth_service
 from api.app.auth.permissions import Permission
 from api.domain.money import USD, Money
+from api.execution import bindings
 from api.liquidity.capacity import CapacityError, Commitment
 from api.liquidity.store import _current_evidence, reserve_capacity_in
 from api.workflow import audit, conditions
@@ -165,6 +168,19 @@ def create_payment_intent(
     if ev.kind.value not in ("provider_verified", "merchant_attested", "synthetic"):
         raise ConflictError("capacity evidence is not verified", code="INSUFFICIENT_CAPACITY")
     intent_id = "pin_" + secrets.token_hex(8)
+    connected = (
+        bindings.active(conn, a["payee_merchant"], "invoicer") is not None
+        and bindings.active(conn, merchant_id, "payer") is not None
+    )
+    if synthetic:
+        held_reason = "SYNTHETIC_EVIDENCE_HELD"
+    elif not execution_enabled:
+        held_reason = "EXECUTION_DISABLED"
+    elif not connected:
+        held_reason = "PROVIDER_NOT_CONNECTED"
+    else:
+        held_reason = None
+    dispatch = held_reason is None
     amount = int(a["amount_cents"]) + int(a["fee_ceiling_cents"])
     try:
         reserve_capacity_in(
@@ -192,7 +208,9 @@ def create_payment_intent(
         "operation_key": operation_key,
         "request_sha256": body_hash,
         "commitment_id": f"pi:{intent_id}",
-        "status": "awaiting_payer_action",
+        "status": "approved",
+        "status_reason": held_reason or "QUEUED_FOR_PROVIDER",
+        "status_updated_at": at,
         "evidence_kind": ev.kind.value,
         "created_by": user_id,
         "created_at": at,
@@ -211,7 +229,7 @@ def create_payment_intent(
             intent_id=intent_id,
             payload=payload,
             payload_sha256=request_hash(payload),
-            status="pending" if execution_enabled and not synthetic else "held",
+            status="pending" if dispatch else "held",
             available_at=at,
             created_at=at,
         )
@@ -228,33 +246,45 @@ def create_payment_intent(
             "authorization_id": authorization_id,
             "amount_cents": int(a["amount_cents"]),
             "reserved_cents": amount,
-            "outbox": "pending" if execution_enabled and not synthetic else "held",
+            "outbox": "pending" if dispatch else "held",
+            "status_reason": held_reason or "QUEUED_FOR_PROVIDER",
             "evidence_kind": ev.kind.value,
         },
     )
     return {
         **values,
         "created_at": at.isoformat(),
+        "status_updated_at": at.isoformat(),
         "replayed": False,
-        **_labels(execution_enabled and not synthetic),
+        **_labels("approved", dispatch),
     }
 
 
-def _labels(execution_enabled: bool) -> dict[str, Any]:
+# What each state means for money, in every response (doc 13: distinct labels; D006).
+_PROVIDER_CONFIRMED = {"provider_confirmed", "reconciled"}
+
+
+def _labels(status: str, dispatchable: bool) -> dict[str, Any]:
     return {
-        "execution": "enabled" if execution_enabled else "disabled",
-        "money_moved": False,
-        "provider_confirmed": False,
+        "execution": "enabled" if dispatchable else "disabled",
+        "money_moved": status in _PROVIDER_CONFIRMED,
+        "provider_confirmed": status in _PROVIDER_CONFIRMED,
         "funds_usable": False,
-        "note": "no PayPal call is made in P4; the payer-hosted action is created by the P5 "
-        "worker only after the owner authorizes the final Sandbox payment",
+        "note": (
+            "payer-hosted PayPal action only; Elide never pays or approves for the payer. "
+            "Provider confirmation is not spendable funds (D006)"
+        ),
     }
 
 
 def _intent_json(r: Any) -> dict[str, Any]:
     out = dict(r)
     out["created_at"] = r["created_at"].isoformat()
-    return {**out, **_labels(False)}
+    if r.get("status_updated_at") is not None:
+        out["status_updated_at"] = r["status_updated_at"].isoformat()
+    queued = r["status"] == "approved" and r.get("status_reason") == "QUEUED_FOR_PROVIDER"
+    live = r["status"] not in ("approved", "cancelled", "failed", "expired")
+    return {**out, **_labels(r["status"], queued or live)}
 
 
 def intents_for(conn: Connection, merchant_id: str) -> list[dict[str, Any]]:

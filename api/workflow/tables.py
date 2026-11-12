@@ -388,13 +388,17 @@ payment_intent = Table(
     # Evidence basis of the reserved cash. A synthetic intent can never leave its initial
     # state, so simulation data cannot become payment authority (also enforced on outbox).
     Column("evidence_kind", String(20), nullable=False, server_default=text("'synthetic'")),
+    # P5 (ADR-0012 §4.1): why the intent is in its current state, and since when. The
+    # transition itself is guarded by a trigger and logged in payment_state_event.
+    Column("status_reason", String(80)),
+    Column("status_updated_at", DateTime(timezone=True)),
     UniqueConstraint("payer_merchant", "operation_key", name="uq_payment_intent_operation"),
     CheckConstraint(
         "evidence_kind IN ('provider_verified', 'merchant_attested', 'synthetic')",
         name="ck_payment_intent_evidence_kind",
     ),
     CheckConstraint(
-        "evidence_kind <> 'synthetic' OR status IN ('awaiting_payer_action', 'cancelled')",
+        "evidence_kind <> 'synthetic' OR status IN ('approved', 'cancelled')",
         name="ck_payment_intent_synthetic_never_executes",
     ),
     CheckConstraint(
@@ -402,8 +406,9 @@ payment_intent = Table(
     ),
     CheckConstraint("currency = 'USD'", name="ck_payment_intent_currency"),
     CheckConstraint(
-        "status IN ('awaiting_payer_action', 'provider_pending', 'provider_confirmed', "
-        "'failed', 'cancelled', 'unknown')",
+        "status IN ('approved', 'session_pending', 'payer_action_pending', "
+        "'provider_pending', 'provider_unknown', 'provider_confirmed', 'reconciled', "
+        "'failed', 'expired', 'cancelled', 'exception')",
         name="ck_payment_intent_status",
     ),
 )
@@ -422,11 +427,33 @@ outbox_message = Table(
     Column("lease_until", DateTime(timezone=True)),
     Column("available_at", DateTime(timezone=True), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
-    CheckConstraint("kind IN ('create_payment_session', 'provider_fetch')", name="ck_outbox_kind"),
+    # P5 worker (ADR-0012 §4.3): lease owner + fencing token, error, dead letter.
+    Column("lease_owner", String(80)),
+    Column("lease_token", Integer, nullable=False, server_default=text("0")),
+    Column("max_attempts", Integer, nullable=False, server_default=text("8")),
+    Column("last_error", String(200)),
+    Column("last_attempt_at", DateTime(timezone=True)),
+    Column("finished_at", DateTime(timezone=True)),
     CheckConstraint(
-        "status IN ('held', 'pending', 'leased', 'done', 'failed')", name="ck_outbox_status"
+        "kind IN ('create_payment_session', 'provider_fetch', 'reconcile_payment', "
+        "'cancel_payment_session')",
+        name="ck_outbox_kind",
+    ),
+    CheckConstraint(
+        "status IN ('held', 'pending', 'leased', 'done', 'failed', 'dead')",
+        name="ck_outbox_status",
     ),
     CheckConstraint("attempts >= 0", name="ck_outbox_attempts"),
+    CheckConstraint("max_attempts BETWEEN 1 AND 50", name="ck_outbox_max_attempts"),
+    CheckConstraint(
+        "status <> 'leased' OR (lease_owner IS NOT NULL AND lease_until IS NOT NULL)",
+        name="ck_outbox_lease",
+    ),
+)
+Index(
+    "ix_outbox_due",
+    outbox_message.c.available_at,
+    postgresql_where=text("status IN ('pending', 'leased')"),
 )
 
 audit_event = Table(

@@ -122,8 +122,13 @@ def _my_invoices(conn, c: MerchantCtx) -> list[dict[str, Any]]:
                 offer.c.obligation_id == oid, offer.c.status == "proposed"
             )
         ).scalar_one_or_none()
+        # An invoice can have several intents over time (a failed or expired one, then a
+        # new one); the newest is its current payment state.
         intent = conn.execute(
-            select(payment_intent.c.status).where(payment_intent.c.obligation_id == oid)
+            select(payment_intent.c.status)
+            .where(payment_intent.c.obligation_id == oid)
+            .order_by(payment_intent.c.created_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
         out.append(
             {
@@ -146,15 +151,26 @@ def _my_invoices(conn, c: MerchantCtx) -> list[dict[str, Any]]:
     return out
 
 
+PAYMENT_STATE_LABELS = {
+    "approved": "INTENT_CREATED_NOT_SENT",
+    "session_pending": "PREPARING_PAYPAL_INVOICE",
+    "payer_action_pending": "AWAITING_PAYER_AT_PAYPAL",
+    "provider_pending": "PROVIDER_PENDING",
+    "provider_unknown": "PROVIDER_OUTCOME_UNKNOWN",
+    "provider_confirmed": "PAYPAL_CONFIRMED_NOT_BOOKED",
+    "reconciled": "PAYPAL_CONFIRMED_RECONCILED",
+    "failed": "FAILED",
+    "expired": "EXPIRED",
+    "cancelled": "CANCELLED",
+    "exception": "NEEDS_OPERATOR_REVIEW",
+}
+
+
 def _payment_state(intent_status: str | None) -> str:
-    """Distinct labels (doc 13): nothing here is ever PAYPAL_CONFIRMED in P4."""
+    """Distinct labels (doc 13). PAYPAL_CONFIRMED never means spendable (D006)."""
     if intent_status is None:
         return "NOT_STARTED"
-    return {
-        "awaiting_payer_action": "INTENT_CREATED_NOT_SENT",
-        "provider_pending": "PROVIDER_PENDING",
-        "provider_confirmed": "PAYPAL_CONFIRMED",
-    }.get(intent_status, intent_status.upper())
+    return PAYMENT_STATE_LABELS.get(intent_status, intent_status.upper())
 
 
 # --- read models ---------------------------------------------------------------------------
