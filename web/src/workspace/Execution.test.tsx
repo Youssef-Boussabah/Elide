@@ -124,14 +124,58 @@ describe("settlements (ADR-0012 §9)", () => {
     expect(screen.getByText("usable USD: USD 0.00")).toBeTruthy();
   });
 
-  it("shows the payer only what it paid", async () => {
-    installFakeBackend(() => ({
-      status: 200,
-      body: { settlements: [{ role: "payer", intent_id: "pin_1", capture_id: "C1", paid_cents: 2400, currency: "USD" }] },
-    }));
+  const verification = {
+    status: "PASSED",
+    attestations: [
+      {
+        purpose: "booking",
+        verdict: "passed",
+        checker_version: "elide-reconciliation-check/2",
+        document_sha256: "ab".repeat(32),
+        verified_at: "2026-11-12T18:26:13Z",
+      },
+    ],
+    legacy_check_sha256_placeholder: false,
+  };
+  const payer = {
+    role: "payer",
+    intent_id: "pin_1",
+    capture_id: "C1",
+    settled_cents: 2400,
+    currency: "USD",
+    obligation_settlement: "PROVIDER_CONFIRMED",
+    payer_authorization: "MERCHANT_APPROVED",
+    payment_source: "NOT_VERIFIED",
+    verification,
+  };
+
+  it("shows the payer a settled obligation without claiming which account paid", async () => {
+    installFakeBackend(() => ({ status: 200, body: { settlements: [payer] } }));
     render(<SettlementsCard merchant="pilot_buyer" />);
-    await waitFor(() => expect(screen.getByText("USD 24.00 paid via PayPal")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("USD 24.00 received by the payee via PayPal")).toBeTruthy());
+    expect(screen.getByText("obligation settled (PayPal-confirmed)")).toBeTruthy();
+    expect(screen.getByText(/paying account: not verified/)).toBeTruthy();
+    expect(screen.getByText("independent check: passed")).toBeTruthy();
+    expect(screen.queryByText(/paid via PayPal/)).toBeNull();
     expect(screen.queryByText(/PayPal fee/)).toBeNull();
+  });
+
+  it("records the payer's attestation only after an explicit confirmation", async () => {
+    const calls = installFakeBackend((c) =>
+      c.path.endsWith("/payment-source")
+        ? { status: 200, body: { payment_source: "MERCHANT_ATTESTED_THIRD_PARTY" } }
+        : { status: 200, body: { settlements: [payer] } },
+    );
+    render(<SettlementsCard merchant="pilot_buyer" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Someone else paid" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Someone else paid" }));
+    expect(calls.some((c) => c.path.endsWith("/payment-source"))).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm attestation" }));
+    await waitFor(() => expect(calls.some((c) => c.path.endsWith("/payment-source"))).toBe(true));
+    const post = calls.find((c) => c.path.endsWith("/payment-source"));
+    expect(post?.method).toBe("POST");
+    expect(post?.body).toEqual({ source: "third_party" });
+    expect(post?.headers["Idempotency-Key"]).toMatch(/^op-/);
   });
 });
 

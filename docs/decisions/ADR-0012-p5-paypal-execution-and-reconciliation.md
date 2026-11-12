@@ -268,6 +268,12 @@ payer's AP for the obligation nets to zero. Any failure → `payment_exception` 
 operator-visible incident (the booking is never mutated; corrections are compensating
 entries).
 
+> **Corrected in §17 (final review).** The checker as first implemented (v1) did not check
+> `credit = rate·net` or any journal account against PayPal's own figures; v2 does (§17.1).
+> The payer entry described in step 3 overstated its evidence; from 0008 it is
+> `obligation_discharged` to `payment_source_unverified:<capture>` (§17.2). The
+> `check_sha256` placeholder is replaced by `settlement_verification` (§17.3).
+
 ### 7.4 Refunds and reversals after booking
 
 A refund observed on a reconciled payment (invoice `REFUNDED`/`PARTIALLY_REFUNDED`, capture
@@ -330,12 +336,12 @@ Errors keep the P4 shape. Cross-tenant access stays an identical `404`.
 | A5 | Timeout on create/send/cancel → `provider_unknown`, never `failed` | fault injection | Synthetic-tested |
 | A6 | Webhook: forged signature, wrong environment cert host, missing webhook id, duplicate, changed payload, reordered, delayed, unknown resource | contract + PostgreSQL | Synthetic-tested |
 | A7 | Reconciliation: exact match books once; amount/currency/payee/partial/multiple/MARKED_AS_PAID → exception, nothing booked | PostgreSQL integration | Synthetic-tested |
-| A8 | Independent checker agrees with booking; detects a tampered bundle | unit + PostgreSQL | Synthetic-tested |
+| A8 | Independent checker agrees with booking; detects a tampered bundle (v1 detected only unbalanced or receivable-reopening tampers; superseded by A8′, §17.6) | unit + PostgreSQL | Synthetic-tested |
 | A9 | Commitment lifecycle (§4.5) incl. new evidence with/without the outflow | PostgreSQL | Synthetic-tested |
 | A10 | Cross-tenant: other merchants cannot see intents, links, settlements; payee sees no payer reserve | PostgreSQL over HTTP | Synthetic-tested |
 | A11 | UI: execution states, payer link action, provider-confirmed vs spendable labels | jsdom + Playwright (mock provider) | Synthetic-tested |
 | A12 | Adapter request/response shapes against PayPal's schema; live read-only GETs of the P0 invoice/capture through the P5 reconciler | contract + read-only Sandbox | Sandbox-verified (read only) |
-| A13 | One new Sandbox invoice created, sent, paid by the Sandbox payer, reconciled, duplicate replay posts once | owner-authorized operation | Sandbox-verified — **needs owner authorization** |
+| A13 | One new Sandbox invoice created, sent, paid by the Sandbox payer, reconciled, duplicate replay posts once | owner-authorized operation | Sandbox-verified — done 2026-11-12, accepted by the owner (`evidence/phase5/sandbox_payment_result_2026-11-12.md`; payer source account not verified, §17.2) |
 | A14 | Verified webhook delivery | needs a public HTTPS endpoint and a registered webhook | **Blocked** (owner decision) |
 
 ## 12. Alternatives considered
@@ -483,3 +489,243 @@ Requests to the Sandbox host are aborted in those tests.
   reproductions and 14 regressions).
 - The two auto-cancel tests in `test_p5_failures.py` now enable the policy explicitly.
 - 2 jsdom tests for the settlements view and 4 Playwright tests.
+
+## 17. Final architectural review corrections (2026-11-12)
+
+The owner accepted the controlled Sandbox payment (invoice `INV2-HQXZ-SCNE-RKTV-VMMT`, capture
+`82L451107A123522J`, evidence commit `85ebae1`, CI #34). Three accounting and evidence defects
+were found. They are corrected here **without rebooking the pilot payment or changing any
+recorded provider fact**. Migration `0008_p5_verification_attribution`.
+
+Reproduction: `tests/integration/test_p5_verification_review.py`, run against the reviewed
+code and recorded in `evidence/phase5/review_reproduction_20261112.txt`.
+- 8 balanced-but-wrong bookings all reconciled.
+- The payer outflow was labelled `sandbox_verified`.
+- `check_sha256` was `0`×64.
+
+### 17.1 Independent financial verification (finding 1)
+
+**Root cause.** Checker v1 (`check_capture`) verified only ledger identities:
+- the receivable and payable net to zero;
+- clearing received the gross;
+- the settlement record's `gross − fee = net`;
+- the obligation identity.
+
+Its expectations came from the session terms and the stored record, which the same booking
+had written. It never compared any journal account with PayPal's own figures. §7.3 above
+already required `credit = rate·net`, but v1 did not implement it.
+
+So these all passed, and it would have missed the same defects on the pilot:
+- a balanced shift between `paypal_balance` and `fx_conversion_position`;
+- a fee moved against the FX position or the balance;
+- an internally consistent wrong rate, credit or net;
+- issuance booked at the paid amount with the concession dropped;
+- a concession booked to `revenue:sales`;
+- an inflated payable offset as extra discount.
+
+**Checker v2** (`api/accounting/reconciliation_check.py`, `CHECKER_VERSION =
+elide-reconciliation-check/2`). It imports none of the builders, the PayPal settlement
+parser, `invoice_terms`, the PayPal money boundary or `api.domain.money`; a unit test
+enforces this. It works in five steps.
+
+1. **Parse PayPal's raw GET bodies strictly**, with its own parser. Amounts must be at most
+   two decimals in one currency. It checks:
+   - the invoice is PAID with exactly one SUCCESS transaction, and that transaction is this
+     capture;
+   - the capture is COMPLETED and final, and belongs to this invoice;
+   - item − discount = total = paid; due is 0;
+   - there is no tax, shipping, custom or item discount;
+   - capture amount = gross; gross − fee = net;
+   - credit = net with no rate, or credit is within ½ minor unit of net × PayPal's rate in
+     the stated direction. At an exact half-cent tie either neighbour is accepted, because
+     PayPal does not document its tie rule (a Hypothesis property pins this).
+2. **Compare with the approved terms**, read from raw rows:
+   - obligation face = session item = provider item total;
+   - approved concession = provider discount;
+   - intent amount = session total = provider total = gross;
+   - the capture payee is the bound invoicer account.
+3. **Compare the settlement record**, every amount, currency, rate, status, time and party,
+   with the provider facts.
+4. **Check the journal.** Every entry that cites the invoice or the capture, or touches
+   `accounts_receivable:<invoice>` or `accounts_payable:<obligation>`, must:
+   - be an expected kind, in the expected entity, citing the expected resource, with the
+     expected evidence class;
+   - have **debit and credit totals per account and currency** equal to those derived from
+     the provider facts.
+
+   Any extra, missing or duplicate entry is a problem. The chart-of-accounts contract
+   verified:
+
+   | Entry | Account / currency | Debit | Credit |
+   |---|---|---|---|
+   | invoice_issued | `accounts_receivable:<inv>` USD | face | 0 |
+   | invoice_issued | `revenue:sales` USD | 0 | face |
+   | concession_authorized | `contra_revenue:early_payment_discount` USD | discount | 0 |
+   | concession_authorized | `accounts_receivable:<inv>` USD | 0 | discount |
+   | provider_settlement | `paypal_settlement_clearing` USD | gross | fee + net |
+   | provider_settlement | `accounts_receivable:<inv>` USD | 0 | gross |
+   | provider_settlement | `expense:paypal_fees` USD | fee | 0 |
+   | provider_settlement (FX) | `fx_conversion_position` USD | net | 0 |
+   | provider_settlement (FX) | `paypal_balance` CAD | credit | 0 |
+   | provider_settlement (FX) | `fx_conversion_position` CAD | 0 | credit |
+   | provider_settlement (same currency) | `paypal_balance` USD | net | 0 |
+   | payable_recognized | `purchases` USD | face | 0 |
+   | payable_recognized | `accounts_payable:<obl>` USD | 0 | face |
+   | obligation_discharged | `accounts_payable:<obl>` USD | face | 0 |
+   | obligation_discharged | `payment_source_unverified:<cap>` USD | 0 | cash |
+   | obligation_discharged | `discount_received` USD | 0 | concession |
+   | payment_source_attested | see §17.2 | | |
+
+5. **Check settlement events and commitments.**
+   - Settlement events: exactly one cash_applied event for the intent, equal to gross, and
+     face = applied + concession + remaining, with remaining 0.
+   - Commitments: the reservation was closed as `settled:capture:<id>`, and there is one
+     settled outflow equal to the cash in the payer's books.
+
+The checker is a **booking guard**. It runs inside the booking transaction after every row
+is written; any problem rolls the whole booking back and opens `INDEPENDENT_CHECK_FAILED`.
+At booking, the bodies must also be the ones Elide's own GETs recorded
+(`provider_operation.response_sha256`).
+
+`check_capture` (v1) is kept for the historical scripts and now accepts the corrected payer
+structure; v2 supersedes it.
+
+### 17.2 Payer-side attribution (finding 2)
+
+**Root cause.** The single `provider_payment_sent` entry credited `paypal_payments_sent`
+(the payer's own cash outflow) as `sandbox_verified`. PayPal's invoice and capture GETs
+confirm only that the invoice was paid and that the payee received the money. The capture
+has a `payee` but no payer field (Payments v2 capture schema), and the invoice transaction
+does not name the paying account. Related claims went beyond the evidence in the same way:
+- `provider_settlement.payer_merchant`;
+- the settled-outflow comment ("the cash has left the account");
+- the UI text "You paid … paid via PayPal".
+
+**Three separately evidenced facts now:**
+
+| Fact | Evidence | Where |
+|---|---|---|
+| Obligation settlement | **Provider-confirmed** (invoice PAID, capture COMPLETED to the bound payee, checker v2) | payee bundle; payer `obligation_discharged` (`sandbox_verified`) |
+| Payer authorization of the payment | **Merchant-approved** (leg authorization, release, state events, audit chain) | P4/P5 records |
+| Payer source-account debit | **Not verified** until the payer merchant attests it; *provider-verified* is not available (below) | `payment_source_unverified:<cap>` → `payment_source_attested` |
+
+**Payer books from 0008:**
+- `payable_recognized` (merchant-attested).
+- `obligation_discharged` (`sandbox_verified`, cites the capture): Dr payable / Cr
+  `payment_source_unverified:<cap>` (cash) / Cr `discount_received`. The payable clears,
+  because the debt is discharged whoever paid it.
+- `POST /payment-intents/{id}/payment-source` records `payment_source_attested`
+  (`merchant_attested`, payer only, `payment:authorize`, step-up, Idempotency-Key, at most
+  once per capture; the DB unique key and a row lock enforce this):
+  - `own_paypal_account`: Dr unverified / Cr `paypal_payments_sent`;
+  - `third_party`: Dr unverified / Cr `third_party_payment:<cap>`.
+
+  It never changes the obligation, the payee's books or any cash commitment.
+
+**A third party pays.** The obligation is still discharged and booked once. The payer's
+outflow is not invented: it stays unverified until the payer attests "third party". The
+settled-outflow commitment remains a conservative hold in every case, released only by newer
+balance evidence that lists it, so a payer who did not pay is at worst under-counted, never
+over-counted.
+
+**Pre-0008 records (the pilot)** are immutable and keep their recorded values. The migration
+appends `evidence_correction` rows (append-only, unique per subject and aspect):
+- each `provider_payment_sent` entry: `payer_source_debit` → `unverified`;
+- each settlement: `payer_merchant` → `debtor_of_discharged_obligation`;
+- each settlement: `check_sha256` → `placeholder_not_a_digest`;
+- each settled outflow: `outflow_basis` → `presumed_outflow_unverified_source`.
+
+The v2 checker accepts the legacy payer entry **only** with its correction. A legacy
+own-account attestation posts nothing; a legacy third-party attestation moves the credit
+from `paypal_payments_sent` to `third_party_payment:<cap>`.
+
+**Stronger payer identity: research.** PayPal Transaction Search,
+`GET /v1/reporting/transactions` with `transaction_id` and `fields=all`, returns
+`payer_info.account_id` and `email_address` for transactions on the caller's own account. It
+needs the `https://uri.paypal.com/services/reporting/search/read` scope, and
+"It takes a maximum of three hours" for transactions to appear.
+
+That is a supported, authorized read for the payee. It could establish **which PayPal account
+paid**, by fingerprint against the payer binding. It still would not prove a debit in the
+payer merchant's own books, and the binding itself is merchant-attested. It is **not
+implemented and was not called**. Enabling it needs the owner's authorization, the scope on
+the REST app and an ADR addendum. Until then nothing in Elide produces `PROVIDER_VERIFIED`
+for a payer.
+
+### 17.3 Verification attestation replaces the placeholder (finding 3)
+
+**Root cause.** `check_sha256` was declared as "the digest of the independent check" but was
+written as the constant `"0" * 64`. No digest was ever computed, so the field asserted
+nothing.
+
+**Design.** `settlement_verification` (append-only) stores, per run:
+- the canonical verification document (sorted keys, no whitespace, ASCII);
+- `document_sha256` = SHA-256 of that document;
+- `checker_version`, purpose (`booking` | `reverification`), verdict and problems;
+- both body hashes, the time and the actor.
+
+The document identifies:
+- the checker version;
+- the input bodies, by `body_sha256` (the same canonical form as `response_sha256`);
+- the provider facts extracted;
+- every record examined: the settlement row digest; the intent, session, obligation and
+  binding digests over their stable columns; each journal entry's id, kind, entity,
+  `content_sha256` and a digest of its postings; settlement events; commitments; the
+  attestation and the corrections;
+- the problems.
+
+The same rows and bodies reproduce the same digest (tested).
+
+Database guards:
+- `(verdict='passed') = (problems='[]')`;
+- the digest format;
+- one booking verification per capture;
+- the verification's intent must equal the settlement's;
+- a **deferred constraint trigger** rejects any `provider_settlement` committed without a
+  passing booking verification;
+- a NOT VALID `CHECK (check_sha256 IS NULL)` forbids the placeholder on every new row, while
+  pre-0008 rows keep it, labelled by their correction.
+
+API (both parties) `verification`:
+- `status`;
+- `attestations[]`, each with purpose, verdict, version, digest and time; never the document,
+  which spans both merchants' books;
+- `legacy_check_sha256_placeholder`.
+
+### 17.4 API contract changes
+
+| Method | Path | Change |
+|---|---|---|
+| GET | `/v1/m/{m}/settlements`, `/payment-intents/{id}` (payer) | `paid_cents` → `settled_cents` (amount PayPal applied to the obligation); adds `obligation_settlement`, `payer_authorization`, `payment_source`, `payment_source_attested_at`, `payment_source_note`, `outflow_commitment_basis`, `corrections`, `verification` |
+| GET | same (payee) | adds `paying_account: NOT_IDENTIFIED_BY_PROVIDER`, `verification`; never the payer's attestation |
+| POST | `/v1/m/{m}/payment-intents/{id}/payment-source` | new (§17.2); `409 NOT_RECONCILED` / `ALREADY_ATTESTED`; payee and other tenants get `404` |
+
+### 17.5 The real pilot
+
+The pilot database was migrated to 0008. The recorded booking (5 entries, 17 postings, 1
+settlement, the placeholder) is unchanged. `scripts/p5_reverify_settlement.py` then:
+- made two read-only GETs;
+- ran checker v2 against the raw rows;
+- appended one `reverification` attestation;
+- wrote `evidence/phase5/reverification_<UTC>.json`.
+
+The payer's payment source remains **NOT_VERIFIED**. Only the payer merchant, as the owner,
+can attest it; Elide did not attest it.
+
+### 17.6 Acceptance additions
+
+| # | Requirement | Test level | Evidence class |
+|---|---|---|---|
+| A8′ | Checker v2: 8 balanced-but-wrong tampers refused atomically (CAD credit offset in FX, fee misallocation ×2, wrong rate, wrong net, issuance without concession, concession to revenue, inflated payable) | PostgreSQL, mock PayPal | Synthetic-tested |
+| A15 | Strict provider parser, honest-figure and wrong-credit properties, checker independence | unit + Hypothesis | Synthetic-tested |
+| A16 | Verification attestation reproducible; append-only; deferred trigger rejects an unverified settlement; placeholder refused on new rows | PostgreSQL | Synthetic-tested |
+| A17 | Payer attribution: discharge provider-confirmed, source not verified; own-account and third-party attestation once (concurrency); payee cannot attest; payee view private | PostgreSQL over HTTP, jsdom, Playwright | Synthetic-tested |
+| A18 | Legacy (pre-0008) booking: migration appends corrections, immutable facts unchanged, v2 verifies with the correction, legacy attestations | PostgreSQL (0007 → book → 0008) | Synthetic-tested |
+| A19 | Real pilot re-verified by checker v2 from fresh GETs, appended attestation, no financial row changed | read-only Sandbox | Sandbox-verified (read only) |
+
+Still open, not changed by this review:
+- INV-1 (invoice transaction time about 8 h from capture time);
+- A14 (verified webhooks);
+- refund posting (detection only);
+- ADR-0013 (strict xfail unchanged);
+- Transaction Search payer identity (§17.2, needs authorization).

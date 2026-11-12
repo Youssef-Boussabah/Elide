@@ -283,13 +283,35 @@ export type AuditEvent = {
   event_sha256: string;
 };
 
-/** GET /settlements: each merchant sees only its own side of a reconciled payment. */
+/** The independent checker's attestations of one settlement (ADR-0012 §17.3). */
+export type SettlementVerification = {
+  status: "PASSED" | "FAILED" | "NOT_ATTESTED";
+  attestations: {
+    purpose: "booking" | "reverification";
+    verdict: "passed" | "failed";
+    checker_version: string;
+    document_sha256: string;
+    verified_at: string;
+  }[];
+  legacy_check_sha256_placeholder: boolean;
+  note?: string;
+};
+
+/** GET /settlements: each merchant sees only its own side of a reconciled payment. The
+ * payer's amount is what PayPal applied to the obligation; PayPal does not name the paying
+ * account, so the payment source is NOT_VERIFIED until the payer attests it (§17.2). */
 export type Settlement = {
   role: "payer" | "payee";
   intent_id: string;
   capture_id: string;
   currency?: string;
-  paid_cents?: number;
+  settled_cents?: number;
+  obligation_settlement?: "PROVIDER_CONFIRMED";
+  payer_authorization?: "MERCHANT_APPROVED";
+  payment_source?: "NOT_VERIFIED" | "MERCHANT_ATTESTED_OWN_ACCOUNT" | "MERCHANT_ATTESTED_THIRD_PARTY";
+  outflow_commitment_basis?: string;
+  paying_account?: "NOT_IDENTIFIED_BY_PROVIDER";
+  verification?: SettlementVerification;
   gross_cents?: number;
   fee_cents?: number;
   net_cents?: number;

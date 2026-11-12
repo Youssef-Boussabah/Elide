@@ -1,0 +1,24 @@
+# P5 final review: defect reproduction against 85ebae1 (product code = 66c95ff), 2026-11-12T18:50:26Z
+# Synthetic-tested: PostgreSQL + MockPayPal. Command: uv run pytest tests/integration/test_p5_verification_review.py --tb=line
+# Each tamper is balanced; on the old checker the intent reconciles (defect).
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:82: AssertionError: ('reconciled', [])
+tests\integration\test_p5_verification_review.py:278: AssertionError: [('provider_payment_sent', 'sandbox_verified', 'paypal_payments_sent')]
+tests\integration\test_p5_verification_review.py:288: AssertionError: assert '0000000000000000000000000000000000000000000000000000000000000000' != ('0' * 64)
+10 failed, 1 warning in 25.96s
+FAILED tests/integration/test_p5_verification_review.py::test_wrong_cad_credit_offset_in_fx_position_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_fee_misallocation_that_keeps_balance_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_same_currency_fee_misallocation_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_internally_consistent_but_wrong_fx_conversion_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_internally_consistent_but_wrong_net_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_wrong_issuance_without_concession_still_clearing_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_concession_posted_to_the_wrong_account_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_payer_payable_overstated_with_matching_discount_is_refused
+FAILED tests/integration/test_p5_verification_review.py::test_payer_cash_outflow_is_not_labelled_provider_verified
+FAILED tests/integration/test_p5_verification_review.py::test_settlement_has_a_real_verification_digest

@@ -33,6 +33,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
+import api.accounting.tables
 import api.app.auth.tables
 import api.workflow.tables  # noqa: F401  (payment_intent, obligation)
 from api.db import Base
@@ -40,6 +41,15 @@ from api.db import Base
 metadata = Base.metadata
 MERCHANT_FK = "merchant_org.merchant_id"
 INTENT_FK = "payment_intent.intent_id"
+# Column comments installed by migration 0008 (kept identical for `alembic check`).
+PAYER_MERCHANT_COMMENT = (
+    "The debtor of the obligation the capture discharged; NOT an identified paying PayPal "
+    "account (ADR-0012 §17.2)."
+)
+CHECK_SHA_COMMENT = (
+    "LEGACY: pre-0008 rows hold a 64-zero placeholder, never a digest; new rows are NULL. "
+    "See settlement_verification."
+)
 
 provider_account = Table(
     "provider_account",
@@ -255,7 +265,13 @@ provider_settlement = Table(
     Column("environment", String(20), nullable=False),
     Column("invoice_id", String(80), nullable=False),
     Column("intent_id", String(40), ForeignKey(INTENT_FK), nullable=False, unique=True),
-    Column("payer_merchant", String(80), ForeignKey(MERCHANT_FK), nullable=False),
+    Column(
+        "payer_merchant",
+        String(80),
+        ForeignKey(MERCHANT_FK),
+        nullable=False,
+        comment=PAYER_MERCHANT_COMMENT,
+    ),
     Column("payee_merchant", String(80), ForeignKey(MERCHANT_FK), nullable=False),
     Column("receipt_id", String(120), nullable=False, unique=True),
     Column("gross_cents", BigInteger, nullable=False),
@@ -270,7 +286,9 @@ provider_settlement = Table(
     Column("capture_create_time", DateTime(timezone=True), nullable=False),
     Column("payee_fingerprint", String(40), nullable=False),
     Column("bundle_sha256", String(64), nullable=False),
-    Column("check_sha256", String(64), nullable=False),
+    # LEGACY (0008): pre-0008 rows hold a 64-zero placeholder, never a digest. New rows are
+    # NULL (NOT VALID CHECK); the verification lives in `settlement_verification`.
+    Column("check_sha256", String(64), comment=CHECK_SHA_COMMENT),
     Column("recorded_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("environment = 'sandbox'", name="ck_provider_settlement_environment"),
     CheckConstraint("gross_currency = 'USD'", name="ck_provider_settlement_gross_currency"),
@@ -308,9 +326,97 @@ Index(
     postgresql_where=text("resolved_at IS NULL"),
 )
 
+# 0008 (ADR-0012 §17): the independent checker's attestation of one settlement. The document
+# is canonical JSON; document_sha256 = SHA-256 of it. Exactly one passing `booking`
+# verification is required (deferred constraint trigger) for every settlement inserted
+# after 0008; later `reverification` rows are appended, never replacing anything.
+settlement_verification = Table(
+    "settlement_verification",
+    metadata,
+    Column("id", BigInteger, Identity(), primary_key=True),
+    Column(
+        "capture_id",
+        String(80),
+        ForeignKey("provider_settlement.capture_id"),
+        nullable=False,
+    ),
+    Column("intent_id", String(40), ForeignKey(INTENT_FK), nullable=False),
+    Column("checker_version", String(60), nullable=False),
+    Column("purpose", String(20), nullable=False),
+    Column("verdict", String(10), nullable=False),
+    Column("problems", JSONB, nullable=False),
+    Column("document", JSONB, nullable=False),
+    Column("document_sha256", String(64), nullable=False),
+    Column("invoice_body_sha256", String(64), nullable=False),
+    Column("capture_body_sha256", String(64), nullable=False),
+    Column("verified_at", DateTime(timezone=True), nullable=False),
+    Column("actor", String(80), nullable=False),
+    CheckConstraint(
+        "purpose IN ('booking', 'reverification')", name="ck_settlement_verification_purpose"
+    ),
+    CheckConstraint("verdict IN ('passed', 'failed')", name="ck_settlement_verification_verdict"),
+    CheckConstraint(
+        "(verdict = 'passed') = (problems = '[]'::jsonb)", name="ck_settlement_verification_ok"
+    ),
+    CheckConstraint("document_sha256 ~ '^[0-9a-f]{64}$'", name="ck_settlement_verification_digest"),
+)
+Index(
+    "uq_settlement_verification_booking",
+    settlement_verification.c.capture_id,
+    unique=True,
+    postgresql_where=text("purpose = 'booking'"),
+)
+
+# 0008: corrected provenance for immutable records, appended, never rewriting the record.
+evidence_correction = Table(
+    "evidence_correction",
+    metadata,
+    Column("id", BigInteger, Identity(), primary_key=True),
+    Column("subject_table", String(40), nullable=False),
+    Column("subject_id", String(120), nullable=False),
+    Column("aspect", String(40), nullable=False),
+    Column("recorded_as", Text, nullable=False),
+    Column("corrected_to", String(60), nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("corrected_by", String(80), nullable=False),
+    Column("corrected_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("subject_table", "subject_id", "aspect", name="uq_evidence_correction"),
+    CheckConstraint(
+        "subject_table IN ('journal_entry', 'provider_settlement', 'capacity_commitment')",
+        name="ck_evidence_correction_subject",
+    ),
+)
+
+# 0008: the payer merchant's own statement of where a settled payment's money came from.
+payment_source_attestation = Table(
+    "payment_source_attestation",
+    metadata,
+    Column("id", BigInteger, Identity(), primary_key=True),
+    Column(
+        "capture_id",
+        String(80),
+        ForeignKey("provider_settlement.capture_id"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("intent_id", String(40), ForeignKey(INTENT_FK), nullable=False),
+    Column("merchant_id", String(80), ForeignKey(MERCHANT_FK), nullable=False),
+    Column("source", String(30), nullable=False),
+    Column("attested_by", String(80), nullable=False),
+    Column("attested_at", DateTime(timezone=True), nullable=False),
+    Column("journal_entry_id", BigInteger, ForeignKey("journal_entry.id")),
+    CheckConstraint(
+        "source IN ('own_paypal_account', 'third_party')",
+        name="ck_payment_source_attestation_source",
+    ),
+)
+
 APPEND_ONLY = (
     "payment_state_event",
     "obligation_settlement_event",
     "provider_settlement",
     "provider_request",
+    "settlement_verification",
+    "evidence_correction",
+    "payment_source_attestation",
 )

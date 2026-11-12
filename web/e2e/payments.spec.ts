@@ -127,8 +127,12 @@ test.describe.serial("payment execution (mock PayPal)", () => {
     await expect(row).toContainText("PAYPAL CONFIRMED RECONCILED");
     await expect(row).toContainText("funds usable: no");
     const mine = buyer.getByRole("region", { name: "Settlements" });
-    await expect(mine).toContainText("You paid");
-    await expect(mine).toContainText("USD 24.00 paid via PayPal");
+    await expect(mine).toContainText("Your invoice was paid");
+    await expect(mine).toContainText("USD 24.00 received by the payee via PayPal");
+    await expect(mine).toContainText("obligation settled (PayPal-confirmed)");
+    await expect(mine).toContainText("paying account: not verified");
+    await expect(mine).toContainText("independent check: passed");
+    await expect(mine).not.toContainText("paid via PayPal");
     await expect(mine).not.toContainText("PayPal fee"); // the payee's private figures
 
     const seller = await signIn(browser, SELLER);
@@ -139,6 +143,8 @@ test.describe.serial("payment execution (mock PayPal)", () => {
     await expect(theirs).toContainText("PROVIDER CONFIRMED NOT SPENDABLE");
     await expect(theirs).toContainText("usable USD: USD 0.00");
     await expect(theirs).not.toContainText("spendable: yes");
+    await expect(theirs).toContainText("paying account: not identified by PayPal");
+    await expect(theirs).not.toContainText("We paid from our PayPal account");
 
     const calls = await mockCalls(request);
     expect(calls.filter((c) => c === "create_invoice")).toHaveLength(1);

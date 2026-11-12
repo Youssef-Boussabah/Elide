@@ -202,8 +202,110 @@ export function IntentRow({
   );
 }
 
-/** Reconciled payments from this merchant's side only (ADR-0012 §9). A receipt is PayPal-
- * confirmed, never spendable here (D006); a non-USD credit is never USD capacity (D008). */
+const SOURCE_LABEL: Record<string, string> = {
+  NOT_VERIFIED: "paying account: not verified (PayPal does not name it)",
+  MERCHANT_ATTESTED_OWN_ACCOUNT: "paying account: your PayPal account (your attestation)",
+  MERCHANT_ATTESTED_THIRD_PARTY: "paying account: a third party (your attestation)",
+};
+
+function VerificationBadge({ st }: { st: Settlement }) {
+  const v = st.verification;
+  if (!v) return null;
+  const last = v.attestations[v.attestations.length - 1];
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <Badge tone={v.status === "PASSED" ? "good" : "warn"}>
+        independent check: {v.status === "NOT_ATTESTED" ? "no attestation recorded" : v.status.toLowerCase()}
+      </Badge>
+      {last && (
+        <span className="font-mono text-[10px] text-slate-600" title={last.checker_version}>
+          sha256 {last.document_sha256.slice(0, 12)}
+        </span>
+      )}
+      {v.legacy_check_sha256_placeholder && (
+        <span className="text-xs text-slate-600">legacy record: its check hash is a placeholder</span>
+      )}
+    </span>
+  );
+}
+
+/** The payer's own statement of where the money came from (merchant-attested, once). */
+function PaymentSourceControl({
+  merchant,
+  st,
+  onChange,
+}: {
+  merchant: string;
+  st: Settlement;
+  onChange: () => void;
+}) {
+  const { withStepUp } = useAuth();
+  const [choice, setChoice] = useState<"own_paypal_account" | "third_party" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (st.payment_source !== "NOT_VERIFIED") return null;
+  const submit = async () => {
+    if (!choice) return;
+    setBusy(true);
+    setError(null);
+    const key = newOperationKey();
+    try {
+      await withStepUp(() =>
+        api(`/v1/m/${merchant}/payment-intents/${st.intent_id}/payment-source`, {
+          method: "POST",
+          body: { source: choice },
+          operationKey: key,
+        }),
+      );
+      setChoice(null);
+      onChange();
+    } catch (err) {
+      setError(explain(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="flex flex-col items-start gap-1">
+      {choice === null ? (
+        <span role="group" aria-label="Attest payment source" className="flex gap-1">
+          <button type="button" className="btn-secondary" onClick={() => setChoice("own_paypal_account")}>
+            We paid from our PayPal account
+          </button>
+          <button type="button" className="btn-secondary" onClick={() => setChoice("third_party")}>
+            Someone else paid
+          </button>
+        </span>
+      ) : (
+        <span role="group" aria-label="Confirm payment source" className="flex flex-col gap-1">
+          <span className="text-xs">
+            {choice === "own_paypal_account"
+              ? "You attest this payment left your own PayPal account."
+              : "You attest a third party paid this invoice, not your business."}{" "}
+            Recorded once as your attestation; PayPal does not verify it.
+          </span>
+          <span className="flex gap-1">
+            <button type="button" className="btn-primary" disabled={busy} onClick={submit}>
+              Confirm attestation
+            </button>
+            <button type="button" className="btn-secondary" disabled={busy} onClick={() => setChoice(null)}>
+              Back
+            </button>
+          </span>
+        </span>
+      )}
+      {error && (
+        <span role="alert" className="text-xs text-red-700">
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** Reconciled payments from this merchant's side only (ADR-0012 §9, §17). A receipt is
+ * PayPal-confirmed, never spendable here (D006); a non-USD credit is never USD capacity
+ * (D008). PayPal confirms the obligation was paid; it does not name the paying account. */
 export function SettlementsCard({ merchant }: { merchant: string }) {
   const res = useResource<{ settlements: Settlement[] }>(`/v1/m/${merchant}/settlements`);
   return (
@@ -227,7 +329,7 @@ export function SettlementsCard({ merchant }: { merchant: string }) {
             {res.data.settlements.map((st) => (
               <tr key={st.capture_id} aria-label={`Settlement ${st.intent_id}`}>
                 <td className="font-mono text-xs">{st.intent_id}</td>
-                <td>{st.role === "payee" ? "You received" : "You paid"}</td>
+                <td>{st.role === "payee" ? "You received" : "Your invoice was paid"}</td>
                 <td>
                   {st.role === "payee" ? (
                     <span>
@@ -236,7 +338,7 @@ export function SettlementsCard({ merchant }: { merchant: string }) {
                       {((st.credited_cents ?? 0) / 100).toFixed(2)}
                     </span>
                   ) : (
-                    <span>{money(st.paid_cents ?? 0)} paid via PayPal</span>
+                    <span>{money(st.settled_cents ?? 0)} received by the payee via PayPal</span>
                   )}
                 </td>
                 <td>
@@ -244,9 +346,19 @@ export function SettlementsCard({ merchant }: { merchant: string }) {
                     <span className="flex flex-col items-start gap-1">
                       <StateLabel state={st.receipt_status ?? "PROVIDER_CONFIRMED_NOT_SPENDABLE"} />
                       <Badge tone="warn">usable USD: {money(st.usd_deployable_cents ?? 0)}</Badge>
+                      <Badge tone="neutral">paying account: not identified by PayPal</Badge>
+                      <VerificationBadge st={st} />
                     </span>
                   ) : (
-                    <Badge tone="neutral">kept committed until your next balance attestation</Badge>
+                    <span className="flex flex-col items-start gap-1">
+                      <Badge tone="good">obligation settled (PayPal-confirmed)</Badge>
+                      <Badge tone={st.payment_source === "NOT_VERIFIED" ? "warn" : "neutral"}>
+                        {SOURCE_LABEL[st.payment_source ?? "NOT_VERIFIED"] ?? st.payment_source}
+                      </Badge>
+                      <Badge tone="neutral">kept committed until your next balance attestation</Badge>
+                      <VerificationBadge st={st} />
+                      <PaymentSourceControl merchant={merchant} st={st} onChange={res.reload} />
+                    </span>
                   )}
                 </td>
               </tr>

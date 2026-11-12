@@ -17,6 +17,7 @@ from sqlalchemy import Connection, or_, select
 from api.app.auth.tables import merchant_org
 from api.domain.invoice import Provenance, SourceKind
 from api.domain.money import USD, Money
+from api.execution.attribution import payer_attribution, verification_view
 from api.execution.invoice_session import UNPAID, recipient_view_url, terms_problems
 from api.execution.service import _expected, request_cancel  # noqa: F401  (shared rules)
 from api.execution.states import IntentStatus, TransitionError, transition
@@ -145,17 +146,26 @@ def intent_detail(conn: Connection, merchant_id: str, intent_id: str) -> dict[st
             for k, a, r, rr in c
         ]
         if st is not None:
-            out["settlement"] = {
-                "capture_id": st["capture_id"],
-                "paid_cents": int(st["gross_cents"]),
-                "currency": st["gross_currency"],
-            }
+            out["settlement"] = _payer_settlement(conn, st)
     elif st is not None:
-        out["settlement"] = _payee_settlement(st)
+        out["settlement"] = _payee_settlement(conn, st)
     return out
 
 
-def _payee_settlement(st: Any) -> dict[str, Any]:
+def _payer_settlement(conn: Connection, st: Any) -> dict[str, Any]:
+    """The payer's side. The amount is what PayPal applied to the obligation; whether the
+    payer's own account paid it is not established by PayPal (ADR-0012 §17.2)."""
+    return {
+        "capture_id": st["capture_id"],
+        "settled_cents": int(st["gross_cents"]),
+        "currency": st["gross_currency"],
+        "outflow_commitment_id": f"so:{st['intent_id']}",
+        **payer_attribution(conn, st),
+        "verification": verification_view(conn, st),
+    }
+
+
+def _payee_settlement(conn: Connection, st: Any) -> dict[str, Any]:
     reasons = [D006]
     if st["credit_currency"] != "USD":
         reasons.append(D008)
@@ -173,6 +183,8 @@ def _payee_settlement(st: Any) -> dict[str, Any]:
         "receipt_status": "PROVIDER_CONFIRMED_NOT_SPENDABLE",
         "usd_deployable_cents": 0,
         "reasons": reasons,
+        "paying_account": "NOT_IDENTIFIED_BY_PROVIDER",
+        "verification": verification_view(conn, st),
     }
 
 
@@ -190,17 +202,12 @@ def settlements_for(conn: Connection, merchant_id: str) -> list[dict[str, Any]]:
     out = []
     for st in rows:
         if st["payee_merchant"] == merchant_id:
-            out.append({"role": "payee", "intent_id": st["intent_id"], **_payee_settlement(st)})
+            out.append(
+                {"role": "payee", "intent_id": st["intent_id"], **_payee_settlement(conn, st)}
+            )
         else:
             out.append(
-                {
-                    "role": "payer",
-                    "intent_id": st["intent_id"],
-                    "capture_id": st["capture_id"],
-                    "paid_cents": int(st["gross_cents"]),
-                    "currency": st["gross_currency"],
-                    "outflow_commitment_id": f"so:{st['intent_id']}",
-                }
+                {"role": "payer", "intent_id": st["intent_id"], **_payer_settlement(conn, st)}
             )
     return out
 

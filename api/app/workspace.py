@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 
+from api.accounting.payer_postings import PaymentSource
 from api.ai.adapter import UnconfiguredLLMAdapter
 from api.ai.schemas import PolicyExtraction
 from api.app.auth import service as auth_service
@@ -29,6 +30,7 @@ from api.app.auth.tables import app_user, membership, merchant_org
 from api.config import get_settings
 from api.domain.money import Money
 from api.execution import views as exec_views
+from api.execution.attribution import attest_payment_source as attest_source
 from api.execution.release import release_held_intent
 from api.execution.runtime import payer_email_resolver
 from api.negotiation.counteroffer import NegotiationCase, propose_counteroffer
@@ -729,6 +731,45 @@ def attest_capacity(
         user_id=c.principal.user_id,
         key=key,
         route="capacity.attest",
+        body=body.model_dump(mode="json"),
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
+
+
+class PaymentSourceBody(_Body):
+    source: Literal["own_paypal_account", "third_party"]
+
+
+@router.post("/payment-intents/{intent_id}/payment-source")
+def attest_payment_source(
+    intent_id: str,
+    body: PaymentSourceBody,
+    c: ctx(P.PAYMENT_AUTHORIZE, step_up=True),
+    key: IdemKey = None,
+) -> dict[str, Any]:
+    """The payer merchant's own statement of where a settled payment's money came from
+    (merchant-attested; PayPal does not identify the paying account). Once per payment."""
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return attest_source(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            source=PaymentSource(body.source),
+            at=c.now,
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route=f"intents.payment_source:{intent_id}",
         body=body.model_dump(mode="json"),
         at=c.now,
         operation=op,

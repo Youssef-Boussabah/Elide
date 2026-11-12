@@ -1,5 +1,5 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 **implemented on `feat/p5-paypal-execution` (synthetic-tested; read-only Sandbox-verified), conditionally approved by the owner for the mock-tested architecture (review of `613d72f`, CI run #25); gate-review corrections applied; the controlled Sandbox payment is NOT authorized or performed**. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 **implemented on `feat/p5-paypal-execution` (synthetic-tested; read-only Sandbox-verified), conditionally approved by the owner for the mock-tested architecture (review of `613d72f`, CI run #25); gate-review corrections applied; one owner-authorized Sandbox payment made, verified and accepted by the owner (2026-11-12); final-review corrections (ADR-0012 §17) applied; awaiting merge approval**. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | **Complete** (owner-approved `dc5949e`, CI run #17; merged `3100091`, CI run #18): real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled development cases; 633 tests pass | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | **Complete** (owner-approved `7d971d9`, CI run #21; merged `1ed309a`, CI run #22): 689 backend, 18 frontend, 5 Playwright tests pass; synthetic scope only, outbox held | E2E run and auth isolation test |
-| P5 | Actual PayPal payer payment + provider GET + safe replay | **Sandbox payment evidence captured, pending final architectural review** (not merged): one owner-authorized invoice `INV2-HQXZ-SCNE-RKTV-VMMT` sent and paid (USD 24.00; capture `82L451107A123522J`, fee USD 1.00, credited CAD 31.57), booked once, independent checker clean, replay added nothing (`evidence/phase5/sandbox_payment_result_2026-11-12.md`). Open: verified webhook (A14), refund posting, ADR-0013 | Redacted receipt + journal + webhook replay |
+| P5 | Actual PayPal payer payment + provider GET + safe replay | **Sandbox payment accepted by the owner; final-review corrections applied, pending merge approval** (not merged): invoice `INV2-HQXZ-SCNE-RKTV-VMMT` paid (USD 24.00; capture `82L451107A123522J`, fee USD 1.00, credited CAD 31.57), booked once, replay added nothing. Final review (ADR-0012 §17, migration 0008): independent checker v2 compares every journal account with PayPal's own figures; the payer's source-account debit is NOT verified (merchant attestation available); `settlement_verification` replaces the `check_sha256` placeholder; the pilot re-verified by v2 from read-only GETs (passed). Open: verified webhook (A14), refund posting, INV-1, ADR-0013, Transaction Search payer identity | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
 | P7 | Public license/repo, working demo, video, submission | Not started | Public links, release SHA, submission receipt |
 
@@ -950,6 +950,72 @@ idempotency uses deterministic invoice numbers, search-based lookup and GET-befo
 **The probe is unchanged.** `evidence/phase5/readonly_probe_20261112T103417Z.json` keeps its
 original `cd40638+dirty` provenance.
 
+### P5 final architectural review corrections (2026-11-12)
+
+The owner accepted the Sandbox payment milestone (`85ebae1`, CI #34) and asked for three
+targeted corrections. Merging is not allowed. ADR-0012 §17 has the design; migration
+`0008_p5_verification_attribution` implements it.
+
+**1. Independent financial verification**
+- **Reproduced:** 8 balanced-but-wrong bookings all reconciled under checker v1:
+  - CAD credit offset in the FX position;
+  - fee moved against the FX position, and against the balance;
+  - wrong rate and credit;
+  - wrong net;
+  - issuance without the concession;
+  - concession booked to revenue;
+  - inflated payable.
+- **Root cause:** v1 checked ledger identities only. Its expectations came from the session
+  and the stored record, never from PayPal's figures, and `credit = rate·net` (§7.3) was
+  never implemented.
+- **Fix:** checker v2 (`elide-reconciliation-check/2`) has its own strict parser for the raw
+  GET bodies. It compares debit and credit totals per account and currency for every entry
+  touching the payment. It runs inside the booking transaction, so any mismatch refuses the
+  booking atomically.
+
+**2. Payer attribution**
+- **Reproduced:** the payer's `paypal_payments_sent` credit was classified
+  `sandbox_verified`.
+- **Root cause:** PayPal's capture and invoice do not name the paying account.
+- **Fix:** from 0008, the payer gets `obligation_discharged` (provider-confirmed) to
+  `payment_source_unverified:<capture>`, plus an optional, once-only payer attestation
+  (own account or third party).
+- **Pilot records:** immutable and unchanged. The migration appended `evidence_correction`
+  rows.
+- **Research:** Transaction Search `payer_info` could name the paying account. It was not
+  called and needs owner authorization.
+
+**3. The `check_sha256` placeholder**
+- **Reproduced:** the field was always `0`×64.
+- **Fix:** an append-only `settlement_verification` stores:
+  - the canonical document and its SHA-256;
+  - the checker version and the body hashes;
+  - a digest of every row examined.
+
+  A deferred constraint trigger requires a passing booking verification for every new
+  settlement. New rows must have `check_sha256 IS NULL` (NOT VALID CHECK).
+
+**Real pilot**, recorded separately from the synthetic tests:
+- **Migration:** the pilot database went 0007 → 0008. The journal and settlement row hashes
+  are identical before and after, and 4 corrections were appended
+  (`evidence/phase5/pilot_migration_0008_20261112.txt`).
+- **Re-verification:** two read-only GETs, checker v2 **passed**. Document SHA-256
+  `4bf699c9…21603`. The bodies are identical to the booking-time reads, and the financial
+  rows are unchanged (`evidence/phase5/reverification_20261112T191319Z.json`).
+- **Payment source:** remains NOT_VERIFIED. Elide did not attest it.
+- **History:** a dated correction note is appended to
+  `evidence/phase5/sandbox_payment_result_2026-11-12.md`.
+
+| Check (final review) | Result |
+|---|---|
+| `ruff check` / `ruff format --check` / `alembic check` | pass / pass / no drift (head `0008_p5_verification_attribution`; 0008 down/up exercised with data by the legacy test) |
+| `pytest` (full) | **851 passed, 0 failed, 0 skipped, 1 xfailed** (the strict ADR-0013 xfail, unchanged). `test_concurrent_reconcilers_book_exactly_once` now takes its invoice body from a recorded read, as every production path does |
+| New tests | 21 PostgreSQL (`test_p5_verification_review.py`), 20 unit (`test_verification_units.py`), 2 Hypothesis properties |
+| Frontend `typecheck` / `lint` / `test` | exit 0 / exit 0 / **29 passed** |
+| Playwright (local, harness app with the mock provider) | **10 passed** |
+| Secret scan of the 22 changed/new files (values from `.env`, host name) | 0 hits |
+| PayPal / model / money | 4 read-only GETs in total (one dry run, one recorded run, invoice + capture each); no mutating call, no worker, no model call |
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -1177,3 +1243,13 @@ original `cd40638+dirty` provenance.
     (7 h 59 m 59 s).
   - Evidence: `evidence/phase5/settlement_*`, `replay_*`, `sandbox_payment_result_2026-11-12.md`.
   - **Next task:** owner's final architectural review of P5. Do not merge without it.
+- 2026-11-12 (Claude Code, Opus 5.5): P5 final architectural review corrections (ADR-0012 §17,
+  migration 0008).
+  - Reproduced 10 defects first: 8 balanced tampers, the payer outflow label, the zero
+    placeholder (`evidence/phase5/review_reproduction_20261112.txt`).
+  - Implemented checker v2 as a booking guard, payer attribution with merchant attestation,
+    and `settlement_verification` with a deferred trigger.
+  - Pilot database migrated, then re-verified by v2 from read-only GETs: passed, with no
+    financial row changed.
+  - No mutating PayPal call, no worker, no model call. Not merged.
+  - **Next task:** owner's final merge approval of P5.

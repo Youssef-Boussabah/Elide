@@ -38,7 +38,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from api.accounting.payer_postings import payer_entries
-from api.accounting.reconciliation_check import CaptureExpectation, check_capture
+from api.accounting.reconciliation_check import verify_settlement
 from api.accounting.settlement_postings import settlement_entries
 from api.accounting.store import post_entries_in
 from api.app.auth import service as auth_service
@@ -63,6 +63,7 @@ from api.execution.tables import (
     provider_operation,
     provider_request,
     provider_settlement,
+    settlement_verification,
 )
 from api.integrations.paypal.execution import Outcome, PaymentProvider, ProviderResult
 from api.integrations.paypal.invoice_terms import invoice_terms
@@ -1182,7 +1183,7 @@ def book(rt, intent, sess, inv_body, cap_body, payee_fp) -> Result:
                     capture_create_time=paid_at,
                     payee_fingerprint=payee_fp,
                     bundle_sha256=bundle_sha,
-                    check_sha256="0" * 64,
+                    check_sha256=None,  # legacy column (0008)
                     recorded_at=now,
                 )
             )
@@ -1194,21 +1195,30 @@ def book(rt, intent, sess, inv_body, cap_body, payee_fp) -> Result:
                 at=now,
                 reason=f"settled:capture:{cap_id}",
             )
-            problems = check_capture(
-                conn,
-                CaptureExpectation(
-                    capture_id=cap_id,
-                    invoice_id=settlement.invoice_id,
-                    payee_entity=intent["payee_merchant"],
-                    payer_entity=intent["payer_merchant"],
-                    obligation_id=intent["obligation_id"],
-                    face_cents=rec.record.obligation.face.cents,
-                    cash_cents=cash.cents,
-                    concession_cents=concession.cents,
-                ),
+            # The independent checker (ADR-0012 §17.1): the raw rows written above against
+            # PayPal's own bodies. Any disagreement refuses the whole booking.
+            ver = verify_settlement(
+                conn, capture_id=cap_id, invoice_body=inv_body, capture_body=cap_body
             )
+            problems = ver.problems
             if problems:
                 raise _BookingRefusedError("INDEPENDENT_CHECK_FAILED", problems)
+            conn.execute(
+                settlement_verification.insert().values(
+                    capture_id=cap_id,
+                    intent_id=intent_id,
+                    checker_version=ver.checker_version,
+                    purpose="booking",
+                    verdict="passed",
+                    problems=[],
+                    document=ver.document,
+                    document_sha256=ver.digest,
+                    invoice_body_sha256=ver.document["inputs"]["invoice_body_sha256"],
+                    capture_body_sha256=ver.document["inputs"]["capture_body_sha256"],
+                    verified_at=now,
+                    actor=rt.actor,
+                )
+            )
             transition(
                 conn,
                 intent_id,
@@ -1217,7 +1227,12 @@ def book(rt, intent, sess, inv_body, cap_body, payee_fp) -> Result:
                 reason="BOOKED_AND_CHECKED",
                 actor=rt.actor,
                 at=now,
-                detail={"capture_id": cap_id, "bundle_sha256": bundle_sha},
+                detail={
+                    "capture_id": cap_id,
+                    "bundle_sha256": bundle_sha,
+                    "verification_sha256": ver.digest,
+                    "checker_version": ver.checker_version,
+                },
             )
             conn.execute(
                 update(payment_session)

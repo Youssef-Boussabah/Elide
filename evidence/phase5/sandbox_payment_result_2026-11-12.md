@@ -86,3 +86,36 @@ Before and after: 5 journal entries, 17 postings, 1 settlement event, 1 settleme
 - **Refund posting** is still detection only.
 - **ADR-0013** (agreed-terms semantics and explicit payment decisions) is accepted but not
   implemented; its strict xfail remains.
+
+## Correction appended after the final architectural review (2026-11-12)
+
+This record is kept as written above. Three statements in it overstate the evidence, and
+are corrected here by appending (ADR-0012 §17). The underlying rows are immutable and
+unchanged; the corrections live in `evidence_correction` (migration 0008).
+
+1. **"Payment sent: Dr payable 25.00 / Cr PayPal payments sent 24.00"** was classified
+   `sandbox_verified`.
+   - Correct: the **discharge of the payable** (and the USD 1.00 concession) is
+     provider-confirmed.
+   - Incorrect: the **payer's own source-account debit** (the credit to
+     `paypal_payments_sent`) is **not verified**. PayPal's invoice and capture do not name
+     the paying account.
+   - Correction `journal_entry 5 / payer_source_debit → unverified`.
+   - The payer's payment source shows `NOT_VERIFIED` until the payer merchant attests it.
+     Elide has not attested it.
+2. **The settlement record's `payer_merchant = pilot_buyer`** is the debtor of the discharged
+   obligation, not an identified paying account (`debtor_of_discharged_obligation`).
+3. **The "independent checker: no problems" result** came from checker v1. That version did
+   not compare journal accounts with PayPal's own figures. Its `check_sha256` (`0`×64) is a
+   placeholder, not a digest (`placeholder_not_a_digest`).
+   - The payment has now been re-verified by **checker v2** from two fresh read-only GETs:
+     verdict **passed**, no problems.
+   - Document SHA-256 `4bf699c91fc8d9d2454b064c3347781ad4645427e6a701218a3670ea9fb21603`,
+     appended as a `reverification` attestation.
+   - The fresh bodies are byte-identical (canonical hash) to the ones read at booking time.
+   - No financial row changed.
+   - Evidence: `reverification_20261112T191319Z.json`, `pilot_migration_0008_20261112.txt`.
+
+The settled outflow of USD 24.00 stays committed, now labelled a *presumed outflow, held
+conservatively*. Every amount above (25.00 / 1.00 / 24.00 / 1.00 / 23.00 / CAD 31.57 at
+1.37241975) is confirmed by checker v2 against PayPal's bodies.

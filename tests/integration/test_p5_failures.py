@@ -415,13 +415,15 @@ def test_pending_payment_then_completion(pilot):
 
 
 def test_concurrent_reconcilers_book_exactly_once(pilot):
-    from api.execution.service import observe
+    from api.execution.service import _read, observe
 
     p = pilot
     _, iid, inv = _sent(p)
     p.mock.pay(inv)
-    body = p.mock.get_invoice(inv).body
     rts = [p.runtime(f"r{n}") for n in range(5)]
+    # As in production, the invoice body comes from a recorded provider read: the booking
+    # guard accepts only bodies Elide's own GETs recorded (ADR-0012 §17.1).
+    body = _read(rts[0], iid, None, "get_invoice", p.mock.get_invoice, inv).body
     barrier = threading.Barrier(5)
 
     def go(rt):
