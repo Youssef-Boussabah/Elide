@@ -1,0 +1,181 @@
+{
+  "all_passed": false,
+  "checks": [
+    {
+      "check": "1 code identical to the approved commit",
+      "observed": {
+        "approved": "0349162091196bd712620ca02b50f181903b4911",
+        "code_files_changed": [],
+        "head": "12032b3b8c826cf6b14d32d01a0016e386ea98c4"
+      },
+      "ok": true
+    },
+    {
+      "check": "1 clean working tree",
+      "observed": {
+        "dirty_entries": 0
+      },
+      "ok": true
+    },
+    {
+      "check": "4 AUTO_CANCEL_UNPAID is false",
+      "observed": false,
+      "ok": true
+    },
+    {
+      "check": "5 PAYMENTS_EXECUTION_ENABLED is false (until authorized)",
+      "observed": false,
+      "ok": true
+    },
+    {
+      "check": "5 PAYMENT_PROVIDER is not yet paypal_sandbox",
+      "observed": "none",
+      "ok": true
+    },
+    {
+      "check": "11 Sandbox-only API base",
+      "observed": "api-m.sandbox.paypal.com",
+      "ok": true
+    },
+    {
+      "check": "11 no webhook-driven path configured",
+      "observed": {
+        "webhook_id_configured": false
+      },
+      "ok": true
+    },
+    {
+      "check": "3 payee credential fingerprint",
+      "observed": "redacted:2b2f310e3f08",
+      "ok": true
+    },
+    {
+      "check": "3 payer fingerprint (= P0 invoice recipient)",
+      "observed": "redacted:94281907e2c4",
+      "ok": true
+    },
+    {
+      "check": "11 the client has no capture/refund/record-payment operation",
+      "observed": [],
+      "ok": true
+    },
+    {
+      "check": "11 execution calls only create/send/cancel/get/search",
+      "observed": [
+        "cancel_invoice",
+        "create_invoice",
+        "credential_fingerprint",
+        "get_capture",
+        "send_invoice"
+      ],
+      "ok": false
+    },
+    {
+      "check": "11 execution never updates or deletes an invoice",
+      "observed": "no update_invoice / delete",
+      "ok": true
+    },
+    {
+      "check": "2 migrations through 0007 applied",
+      "observed": "0007_p5_request_identity",
+      "ok": true
+    },
+    {
+      "check": "6 isolated pilot database",
+      "observed": "elide_sandbox_pilot",
+      "ok": true
+    },
+    {
+      "check": "6 only the two pilot merchants exist",
+      "observed": [
+        "pilot_buyer (synthetic=False)",
+        "pilot_seller (synthetic=False)"
+      ],
+      "ok": true
+    },
+    {
+      "check": "6 no payment intent exists yet",
+      "observed": 0,
+      "ok": true
+    },
+    {
+      "check": "7 no outbox message (pending, leased, held, cancel or other)",
+      "observed": [],
+      "ok": true
+    },
+    {
+      "check": "8 no provider session, request, operation, settlement or exception",
+      "observed": {
+        "payment_exception": 0,
+        "payment_session": 0,
+        "provider_operation": 0,
+        "provider_request": 0,
+        "provider_settlement": 0
+      },
+      "ok": true
+    },
+    {
+      "check": "3 no binding yet (the owner binds at authorization)",
+      "observed": [],
+      "ok": true
+    },
+    {
+      "check": "9 no payment authorization yet (the owner approves at authorization)",
+      "observed": 0,
+      "ok": true
+    },
+    {
+      "check": "9 terms: USD 25.00 face, USD 1.00 offered off, USD 24.00 payable, offer open",
+      "observed": {
+        "creditor": "pilot_seller",
+        "currency": "USD",
+        "debtor": "pilot_buyer",
+        "face_cents": 2500,
+        "in_force_revision": 1,
+        "obligation": "pilot_001",
+        "open_cents": 2500,
+        "open_offer": {
+          "cash_cents": 2400,
+          "concession_cents": 100,
+          "offer_expires_at": "2026-11-14T13:13:32.717216+00:00",
+          "pay_by": "2026-11-15T13:13:32.717216+00:00",
+          "proposer": "pilot_seller"
+        },
+        "original_due_at": "2026-11-22T13:13:32.717216+00:00"
+      },
+      "ok": true
+    },
+    {
+      "check": "8 no existing PayPal invoice numbered ELIDE-* (no conflict with the pilot)",
+      "observed": {
+        "invoices": [
+          {
+            "id": "INV2-4RUV-XPEH-4F3C-T8BW",
+            "number": "0001",
+            "status": "PAID"
+          }
+        ],
+        "list_debug_id": "f699303e53d74",
+        "list_http": 200,
+        "oauth_http": 200,
+        "total_items": 1
+      },
+      "ok": true
+    },
+    {
+      "check": "8 no unpaid PayPal invoice that could be paid by mistake",
+      "observed": [
+        "PAID"
+      ],
+      "ok": true
+    }
+  ],
+  "commit": "12032b3b8c826cf6b14d32d01a0016e386ea98c4",
+  "environment": "sandbox",
+  "mutations": "none",
+  "provider_calls": [
+    "POST /v1/oauth2/token",
+    "GET /v2/invoicing/invoices"
+  ],
+  "run_id": "20261112T134451Z"
+}

@@ -142,7 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         for m in ("def capture", "def refund", "def record_payment", "def authorize_payment")
         if m in client_src
     ]
-    exec_calls = sorted(set(re.findall(r"rt\.provider\.(\w+)\(", exec_src)))
+    # Every reference to the provider (called directly or passed to the recorder), not only
+    # direct calls: a first version matched `rt.provider.x(` only and missed GET/search.
+    exec_calls = sorted(set(re.findall(r"rt\.provider\.(\w+)", exec_src)))
     allowed = {
         "create_invoice",
         "send_invoice",
@@ -151,6 +153,9 @@ def main(argv: list[str] | None = None) -> int:
         "search_invoices",
         "get_capture",
         "get_refund",
+        # local attributes, no network: the credential fingerprint and environment name
+        "credential_fingerprint",
+        "environment",
     }
     check(
         "11 the client has no capture/refund/record-payment operation",
