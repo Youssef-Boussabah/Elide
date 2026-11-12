@@ -231,3 +231,97 @@ Implemented as designed above, with these decisions taken during implementation:
 - Settlement events persisted from provider receipts (P5).
 - An outbox worker, the PayPal verify-signature call, and the payer-hosted session (P5, needing owner authorization for the final Sandbox payment).
 - Playwright end-to-end tests. Browser workflow checks were done with Claude in Chrome (`evidence/phase4/browser_workflow_2026-11-11.md`). Component and workflow tests run in jsdom against a scripted backend; API workflows run over HTTP against PostgreSQL.
+
+
+## 13. Architectural review remediation (2026-11-11)
+
+All three findings were reproduced on `f935fe7` before any fix
+(`evidence/phase4/review_findings_reproduction_2026-11-11.md`). Negative tests were written
+first (`tests/integration/test_p4_review_regressions.py`). Migration
+`0005_p4_review_remediation` is additive: no table is rewritten and no existing data
+changes meaning.
+
+1. **Authorizations are bound to their material conditions (finding 1, critical).**
+   - **The bug.** A $990 approval made with a $500 reserve still created an intent after the
+     buyer confirmed a $700 reserve. Revalidation checked only that the option id and amount
+     still existed, capacity reservation ignored the policy floor, and approvals matched any
+     later plan with an equal amount.
+   - **Conditions stored with each decision.** Every decision now stores
+     `conditions` + `conditions_digest`:
+     - the in-force revision and its stored content hash, currency, due date and outstanding
+       balance;
+     - the payee and both parties' participation;
+     - fee terms and the ceiling;
+     - the payer's confirmed policy version and digest, the effective reserve
+       max(evidence reserve, policy floor), the fee cap and prohibited counterparties;
+     - the evidence basis.
+   - **Reuse rule.** A decision is reusable only for the identical leg terms (option,
+     revision, payer, payee, amount, fee ceiling), the identical conditions digest, and
+     while unexpired. Equal amounts alone never qualify. Decisions from before 0005 carry
+     `legacy-unbound` and always need re-approval.
+   - **Approval.** It is refused on a durable plan whose economic inputs changed
+     (`STALE_PLAN`). The independent P2 verifier replays the leg with its upstream legs on
+     current data.
+   - **Intent creation.** All of the following happen in one transaction:
+     1. the actor's and the approver's membership rows are share-locked
+        (`lock_membership`);
+     2. the invoice row is locked;
+     3. the conditions are recomputed (`CONDITIONS_CHANGED`);
+     4. the independent verifier replays the single leg on current data, with no reliance
+        on incoming funds (`VERIFIER_REJECTED`);
+     5. capacity is reserved with `min_protected_reserve_cents` = the confirmed policy floor.
+   - **Timing on a moving clock.** An on-due-date leg is checked at the invoice's current
+     due slot, and an accelerated leg at its planned date. The browser E2E found a
+     false rejection that a frozen test clock had hidden.
+   - **Revocation races.** A revocation that commits while an approval or intent is in
+     flight is seen once the locked row is read, and the write is refused. One that
+     arrives later waits for that transaction. Both orders are tested by holding an
+     uncommitted revocation.
+   - **Synthetic evidence never becomes payment authority.** `payment_intent.evidence_kind`
+     has a CHECK so a synthetic intent can never leave `awaiting_payer_action`/`cancelled`,
+     and a trigger keeps its outbox message `held`, even with execution enabled. In
+     production, synthetic evidence is refused (`SYNTHETIC_EVIDENCE`).
+   - **Display.** Expired decisions are shown as `expired`, never as active.
+     `needs_reapproval` explains why.
+2. **Explicit disclosure policy and allowlisted views (finding 2, high).**
+   - **The bug.** With aggregate consent denied, the network total (USD 1,700) still
+     appeared in the recommendation text and explanation facts, together with the approvals
+     count and downstream leg counts. Non-initiators received downstream counts too.
+   - **The policy.** `disclosure.decide(viewer, focal, share_aggregates)` shows network
+     figures only to the initiating merchant, only when every other active participant has
+     consented, and only when at least 3 other participants exist (MIN_GROUP raised from 2).
+   - **The views.** `disclosure.opportunity_view` and `disclosure.plan_view` build views
+     from allowlisted fields of the viewer's own data. Without disclosure, the
+     recommendation is computed from the viewer's own data only, with no network-derived
+     wording. HTTP responses and model prompts use the same views.
+   - **Tests.** Adversarial tests use a nonparticipating `hidden_vendor`, a hidden invoice
+     `hidden_inv_9931` (USD 7,777.77) and distinctive carrier evidence (432.10 / 98.76). They
+     assert on serialized responses and captured prompts, for denied consent, a small group,
+     and non-initiators.
+3. **Reads are read-only; durable plans are explicit (finding 3).**
+   - **The bug.** Five dashboard GETs wrote five immutable snapshots.
+   - **GET `/opportunities`** is now a preview on a connection that is rolled back.
+   - **POST `/plans`** is the only way to create a durable plan. It needs CSRF, an
+     `Idempotency-Key` and `payment:authorize`. Unchanged economics, digested without the
+     clock (`plan_snapshot.economic_digest`), reuse the existing snapshot for 24 h, and new
+     snapshots are limited to 30 per merchant per hour.
+   - **GET `/plans`** and **GET `/plans/{id}`** are read-only.
+4. **UI and browser E2E.**
+   - **Plan & approvals:** creates or reuses a plan explicitly; shows expired and changed
+     approvals as not active; offers no decision on a stale plan.
+   - **Negotiations:** decision confirmations now survive the list reload; the browser E2E
+     showed they vanished before.
+   - **Policy:** confirmed drafts no longer offer "Confirm".
+   - **Browser tests:** Playwright tests with the installed Chrome run against
+     FastAPI + PostgreSQL + Vite on a fresh `elide_e2e` database, in a new CI job, covering
+     authentication, read-only viewing, two-session negotiation, approval, a held intent,
+     downstream non-executability, and a reserve change invalidating an approval.
+
+**Remaining limitations.**
+- The disclosure threshold (3) and the consent flag are policy placeholders, not a formal
+  privacy guarantee.
+- The economic digest includes slot-indexed inflows, so it can change daily, producing
+  bounded new snapshots.
+- Concurrency tests drive the race with a held database transaction rather than a fault
+  injector.
+- Everything remains synthetic, and no PayPal operation exists in P4.

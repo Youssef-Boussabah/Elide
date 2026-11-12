@@ -38,16 +38,18 @@ Permissions per role are listed in ADR-0011 §4.
 | Method | Path | Permission | Notes |
 |---|---|---|---|
 | GET | `/overview` | `workspace:read` | The merchant's own capacity, its invoices and pending counts. Capacity basis is `PROVIDER_VERIFIED`, `MERCHANT_ATTESTED`, `SYNTHETIC`, `UNVERIFIED` or `NONE`, with `observed_at` and `valid_until`. Each invoice has a `payment_state` |
-| GET | `/opportunities` | `workspace:read` | Builds the permissioned network from PostgreSQL at request time. Runs the P3 analyzer and the P2 planner, checks the plan with the independent replay verifier and stores the snapshot (only verified plans are stored). Returns `opportunity` (P3 `merchant_view`), `plan` (P2 merchant view plus authorization state) and a deterministic template `explanation` (no model). Aggregates go to the initiating merchant only, and only with every contributor's consent and at least 2 contributors; otherwise `WITHHELD_NO_CONSENT` or `WITHHELD_SMALL_GROUP`. Without a confirmed policy, the merchant gets the `POLICY_NOT_CONFIRMED` flag |
+| GET | `/opportunities` | `workspace:read` | **Read-only preview; writes nothing.** Builds the permissioned network from PostgreSQL at request time, runs the P3 analyzer and the P2 planner, and checks the plan with the independent replay verifier. Returns `opportunity`, `plan_preview` (`durable: false`, with no approval actions) and a deterministic template `explanation`. Every field comes from an allowlist after an explicit disclosure decision (see *Disclosure*). Without a confirmed policy, the merchant gets the `POLICY_NOT_CONFIRMED` flag |
 | GET | `/network` | `workspace:read` | Only edges this merchant is a party to, and only its direct counterparties |
 | GET | `/invoices/{obligation_id}` | `workspace:read` | Parties only; includes the immutable revision history |
 | GET | `/offers` | `workspace:read` | Offers on this merchant's invoices, with `can_decide`, `can_withdraw` and the decisions recorded per merchant |
 | POST | `/offers` | `offer:propose` and `offer:decide`; step-up; idempotent | `{obligation_id, concession_cents, pay_by, expires_at, message?, source}`. Signs the merchant's own offer. Requirements: one open offer per invoice, `expires_at ≤ pay_by ≤ current due date` (no credit extension), expiry within 14 days, and the message may mention only this offer's amounts |
 | POST | `/offers/{offer_id}/decision` | `offer:decide`; step-up; idempotent | `{decision: accept\|reject\|counter\|withdraw, terms_digest, counter?}`. Accept, reject and counter are counterparty-only (otherwise `NOT_COUNTERPARTY`); withdraw is proposer-only. Rejection codes: `STALE_DIGEST`, `OFFER_EXPIRED`, `STALE_REVISION`, `OFFER_CLOSED` and `ALREADY_DECIDED`. Acceptance writes the AUTHORIZED revision signed by both parties. `payment_authorized` is always false |
 | POST | `/offers/draft` | `offer:propose` | `{obligation_id, max_concession_cents}`, payer only. Returns deterministic bounds from the P3 counteroffer engine; there is no model call unless a workspace model is explicitly configured. Creates nothing |
-| GET | `/plans/{plan_id}` | `workspace:read` | Participants or the initiator only |
-| POST | `/plans/{plan_id}/authorizations` | `payment:authorize`; step-up; idempotent | `{leg_id, decision: approve\|decline, binding_digest}`, payer only (otherwise `NOT_PAYER`). The digest binds plan, inputs, option, revision, payee, amount, fee ceiling, currency and expiry. `TERMS_NOT_AGREED` is returned if the leg relies on an unsigned offer or proposal; `STALE_PLAN` and `PLAN_EXPIRED` are also possible. One decision per identical live terms. `money_moved` is always false |
-| POST | `/payment-intents` | `payment:authorize`; step-up; `Idempotency-Key` required | `{authorization_id}`. Checks, in one transaction: the approval, expiry, the approver's current authority (else `AUTHORIZATION_REVOKED`), revalidation against current data, no upstream dependency (else `UPSTREAM_NOT_CONFIRMED`), and atomic capacity reservation (else `INSUFFICIENT_CAPACITY`). It then writes the intent (`awaiting_payer_action`) and a HELD outbox message. **No PayPal call is made** |
+| POST | `/plans` `{network?}` | `payment:authorize`; CSRF; `Idempotency-Key` required | Explicitly creates a durable, independently verified plan snapshot for review and approval. If an unexpired snapshot with the same **economic digest** (inputs without the clock) exists, it is reused (`reused: true`) and nothing is written. At most 30 new snapshots per merchant per hour (`429 RATE_LIMITED`). Returns the allowlisted durable plan view |
+| GET | `/plans` | `workspace:read` | The 10 newest durable plans this merchant initiated |
+| GET | `/plans/{plan_id}` | `workspace:read` | Participants or the initiator only. Allowlisted legs with each leg's **current** authorization status: `pending`, `approved`, `declined`, `expired` or `needs_reapproval`. A payee sees only `approved` or `pending`. The `authorize` binding includes `plan_current` (the economic inputs are unchanged) |
+| POST | `/plans/{plan_id}/authorizations` | `payment:authorize`; step-up; idempotent | `{leg_id, decision: approve\|decline, binding_digest}`, payer only (otherwise `NOT_PAYER`). The actor's membership is re-checked under a row lock inside the writing transaction. The plan's economic inputs must be current (otherwise `STALE_PLAN`). The independent verifier replays the leg with its upstream legs on current data (otherwise `VERIFIER_REJECTED`); `TERMS_NOT_AGREED` is returned for an unsigned offer or proposal. The **material conditions** are stored with the decision (see *Authorization reuse*). `money_moved` is always false |
+| POST | `/payment-intents` | `payment:authorize`; step-up; `Idempotency-Key` required | `{authorization_id}`. One transaction, with the actor's and the approver's memberships share-locked. Refusals, in order: `AUTHORIZATION_EXPIRED`, `AUTHORIZATION_REVOKED`, `DUPLICATE`, `ALREADY_IN_EXECUTION` (per-invoice lock); `UPSTREAM_NOT_CONFIRMED`, `TERMS_NOT_AGREED`; `CONDITIONS_CHANGED`, when the current material conditions differ from the approved ones; `VERIFIER_REJECTED`, from the independent verifier on current data; `INSUFFICIENT_CAPACITY`, from the atomic reservation, which uses max(evidence reserve, confirmed policy floor); `SYNTHETIC_EVIDENCE` in production. Writes the intent (`awaiting_payer_action`, with `evidence_kind`) and a HELD outbox message. A synthetic intent can never leave that state; the database enforces it on both tables. **No PayPal call is made** |
 | GET | `/payment-intents` | `workspace:read` | |
 | GET | `/policy` | `workspace:read` | The confirmed revision plus recent drafts (never active) |
 | POST | `/policy/drafts` | `policy:edit` | `{text, source, extraction?}`. With `extraction`, deterministic P3 validation of merchant-entered fields. Without it, a model draft (`MODEL_UNAVAILABLE` unless a workspace model is configured) |
@@ -55,6 +57,38 @@ Permissions per role are listed in ADR-0011 §4.
 | GET | `/audit` | `audit:read` | This merchant's events only; hash-chained and append-only |
 | GET | `/members` | `members:manage` | |
 | POST | `/members/{user_id}/revoke` | `members:manage`; step-up | `{reason}`. Effective immediately for every session of that user |
+
+## Disclosure (server-side policy, `api/workflow/disclosure.py`)
+
+Network-level information (totals, baseline comparisons, counts of legs, approvals,
+bottlenecks or participants, and recommendation wording derived from other merchants'
+data) is added to a view only when all three hold:
+- the viewer is the initiating merchant of that analysis or plan;
+- **every** other active participant has `share_aggregates = true`;
+- at least **3** other active participants exist.
+
+Otherwise the view carries `aggregates.status`, one of `WITHHELD_NOT_INITIATOR`,
+`WITHHELD_NO_CONSENT` or `WITHHELD_SMALL_GROUP`, and a recommendation computed from the
+merchant's own data only. Views are built from allowlisted fields, never by deleting
+fields from the privileged report. Model prompts (when a workspace model is configured)
+are built from the same views.
+
+## Authorization reuse
+
+A payment decision applies only to the identical leg terms: option, invoice revision,
+payer, payee, amount and fee ceiling. It also requires identical **material conditions**,
+and it must be unexpired. The material conditions are:
+- the in-force revision's stored content hash, currency, due date and outstanding balance;
+- the payee, and both parties' participation;
+- the fee terms;
+- the payer's confirmed policy version and digest, and the effective reserve
+  max(evidence reserve, policy floor);
+- the fee cap and any prohibited counterparty;
+- the evidence basis.
+
+Cash levels and other commitments are re-checked by capacity reservation and the verifier
+at intent time. A decision recorded before migration 0005 never matches and needs
+re-approval.
 
 ## Provider webhook
 

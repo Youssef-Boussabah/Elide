@@ -778,6 +778,50 @@ The 24 integration tests cover:
 - No end-to-end test covers capacity contention between two different invoices; that path
   is covered by the P1 reservation tests (`tests/integration/test_planner_reservations_db.py`).
 
+### P4 architectural review remediation (2026-11-11)
+
+All three review findings were reproduced on `f935fe7` before any fix:
+`evidence/phase4/review_findings_reproduction_2026-11-11.md`. The design is recorded in
+ADR-0011 §13; the API contract was updated in `docs/api/P4_WORKSPACE_API.md`.
+
+| # | Finding | Reproduced | Root cause | Fix |
+|---|---|---|---|---|
+| 1 | **Critical:** stale financial authorization | Yes. A $990 approval made under a $500 reserve still created an intent (200, USD 990 reserved) after a $700 reserve was confirmed | (a) Revalidation compared only option id and amount; (b) capacity reservation ignored the confirmed policy floor; (c) approvals carried no record of their conditions and were reused by option + amount; (d) membership was checked outside the writing transaction | Migration `0005`: `payment_authorization.conditions(_digest)`. Reuse needs identical leg terms, conditions digest and an unexpired decision. Intents share-lock the actor's and approver's memberships and the invoice, recompute conditions (`CONDITIONS_CHANGED`), re-run the independent verifier on current data (`VERIFIER_REJECTED`) and reserve with max(evidence reserve, policy floor). Synthetic intents can never leave the held state (CHECK + trigger); production refuses synthetic evidence |
+| 2 | **High:** aggregate disclosure | Yes. With consent denied, the USD 1,700 total, "3 approvals required" and the downstream counts still leaked; non-initiators got downstream counts | Views were the privileged report with fields deleted afterwards; free text and counts were already derived | `api/workflow/disclosure.py`: an explicit `decide()` (initiator only, all consent, at least 3 others) and views built from an allowlist, with own-data recommendations otherwise. HTTP responses and model prompts use the same views |
+| 3 | GET writes durable records | Yes. 5 GETs created 5 snapshots | `analyze_for()` stored on every view | GET is a preview on a rolled-back connection. `POST /plans` (CSRF, Idempotency-Key, `payment:authorize`, 30 new per hour) reuses the snapshot when the economic digest is unchanged. `GET /plans` and `GET /plans/{id}` are read-only |
+
+**Regression tests.**
+- **`tests/integration/test_p4_review_regressions.py` (21 tests).** All of them failed or
+  could not run on the pre-fix code. They cover:
+  - a newer reserve policy;
+  - capacity and verifier re-checks;
+  - the policy floor in the reservation;
+  - expired decisions;
+  - a changed payee, fee, amount or revision never inheriting an approval;
+  - revocation racing both an intent and an approval (held uncommitted revocation);
+  - synthetic authority (database-enforced);
+  - production refusal;
+  - withheld aggregates (consent denied, small group) in HTTP responses and captured prompts;
+  - non-initiators;
+  - a nonparticipating invoice;
+  - read-only GET, idempotent and bounded plan creation, rate limiting, append-only
+    snapshots;
+  - the policy-not-confirmed flag.
+- **Frontend.** 5 new jsdom tests: explicit plan creation, expired and changed approvals
+  not active, a stale plan offering no decision, withheld aggregates.
+- **Browser E2E.** 5 Playwright tests on the real stack, in a new CI `e2e` job
+  (`evidence/phase4/e2e_playwright_2026-11-11.md`). They found 3 further defects, all
+  fixed: false verifier rejection on a moving clock, a vanishing counter confirmation, and
+  a confirm button shown on a confirmed draft.
+
+| Check (remediation) | Result |
+|---|---|
+| `ruff check` / `ruff format --check` / `alembic check` | pass / pass / no drift (head `0005_p4_review_remediation`; up/down/up ok) |
+| `pytest` (full, incl. PostgreSQL integration and concurrency) | **689 passed, 0 failed, 0 skipped** |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / **18 passed** / ok |
+| Playwright E2E (local, Chrome) | **5 passed** |
+| PayPal / model / money | none; outbox held; synthetic intents cannot leave the held state |
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -897,3 +941,13 @@ The 24 integration tests cover:
   No model, PayPal or money operations. Not merged.
   **Next task:** owner architectural review of P4. Start P5 only after approval, and make
   the final Sandbox payment only with explicit owner authorization.
+- 2026-11-11 (Claude Code, Opus 5.5): P4 architectural review remediation on
+  `feat/p4-merchant-platform`. Reproduced all 3 findings. Fixes:
+  - condition-bound authorizations, in-transaction membership locks and current verifier
+    re-checks before any intent, with the policy reserve floor applied (migration 0005);
+  - an explicit disclosure policy with allowlisted views;
+  - read-only GET with explicit durable plans.
+
+  Added 21 PostgreSQL regressions, 5 jsdom tests and 5 Playwright E2E tests (new CI job);
+  the E2E tests found 3 more defects, now fixed. No PayPal or model calls. Not merged.
+  **Next task:** owner final review of P4.
