@@ -1,0 +1,284 @@
+{
+  "commitments": [
+    {
+      "amount_cents": 2400,
+      "commitment_id": "pi:pin_7452d6099eaf9caf",
+      "kind": "reservation",
+      "release_reason": "settled:capture:82L451107A123522J",
+      "released_at": "2026-11-12T18:26:13.320852+00:00"
+    },
+    {
+      "amount_cents": 2400,
+      "commitment_id": "so:pin_7452d6099eaf9caf",
+      "kind": "settled_outflow",
+      "release_reason": null,
+      "released_at": null
+    }
+  ],
+  "environment": "sandbox",
+  "exceptions": [],
+  "independent_checker": [],
+  "intent": {
+    "intent_id": "pin_7452d6099eaf9caf",
+    "status": "reconciled",
+    "status_reason": "BOOKED_AND_CHECKED"
+  },
+  "journal": [
+    {
+      "entity_id": "pilot_seller",
+      "evidence_class": "sandbox_verified",
+      "id": 1,
+      "idempotency_key": "paypal:sandbox:invoice:inv2-hqxz-scne-rktv-vmmt:issued",
+      "kind": "invoice_issued",
+      "postings": [
+        {
+          "account": "accounts_receivable:INV2-HQXZ-SCNE-RKTV-VMMT",
+          "cents": 2500,
+          "currency": "USD"
+        },
+        {
+          "account": "revenue:sales",
+          "cents": -2500,
+          "currency": "USD"
+        }
+      ],
+      "provider_resource_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+      "provider_resource_type": "invoice"
+    },
+    {
+      "entity_id": "pilot_seller",
+      "evidence_class": "sandbox_verified",
+      "id": 2,
+      "idempotency_key": "paypal:sandbox:invoice:inv2-hqxz-scne-rktv-vmmt:concession",
+      "kind": "concession_authorized",
+      "postings": [
+        {
+          "account": "contra_revenue:early_payment_discount",
+          "cents": 100,
+          "currency": "USD"
+        },
+        {
+          "account": "accounts_receivable:INV2-HQXZ-SCNE-RKTV-VMMT",
+          "cents": -100,
+          "currency": "USD"
+        }
+      ],
+      "provider_resource_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+      "provider_resource_type": "invoice"
+    },
+    {
+      "entity_id": "pilot_seller",
+      "evidence_class": "sandbox_verified",
+      "id": 3,
+      "idempotency_key": "paypal:sandbox:capture:82l451107a123522j:settlement",
+      "kind": "provider_settlement",
+      "postings": [
+        {
+          "account": "paypal_settlement_clearing",
+          "cents": 2400,
+          "currency": "USD"
+        },
+        {
+          "account": "accounts_receivable:INV2-HQXZ-SCNE-RKTV-VMMT",
+          "cents": -2400,
+          "currency": "USD"
+        },
+        {
+          "account": "expense:paypal_fees",
+          "cents": 100,
+          "currency": "USD"
+        },
+        {
+          "account": "paypal_settlement_clearing",
+          "cents": -100,
+          "currency": "USD"
+        },
+        {
+          "account": "fx_conversion_position",
+          "cents": 2300,
+          "currency": "USD"
+        },
+        {
+          "account": "paypal_settlement_clearing",
+          "cents": -2300,
+          "currency": "USD"
+        },
+        {
+          "account": "paypal_balance",
+          "cents": 3157,
+          "currency": "CAD"
+        },
+        {
+          "account": "fx_conversion_position",
+          "cents": -3157,
+          "currency": "CAD"
+        }
+      ],
+      "provider_resource_id": "82L451107A123522J",
+      "provider_resource_type": "capture"
+    },
+    {
+      "entity_id": "pilot_buyer",
+      "evidence_class": "merchant_attested",
+      "id": 4,
+      "idempotency_key": "elide:obligation:pilot_001:payable_recognized",
+      "kind": "payable_recognized",
+      "postings": [
+        {
+          "account": "purchases",
+          "cents": 2500,
+          "currency": "USD"
+        },
+        {
+          "account": "accounts_payable:pilot_001",
+          "cents": -2500,
+          "currency": "USD"
+        }
+      ],
+      "provider_resource_id": null,
+      "provider_resource_type": null
+    },
+    {
+      "entity_id": "pilot_buyer",
+      "evidence_class": "sandbox_verified",
+      "id": 5,
+      "idempotency_key": "paypal:sandbox:capture:82l451107a123522j:payment_sent",
+      "kind": "provider_payment_sent",
+      "postings": [
+        {
+          "account": "accounts_payable:pilot_001",
+          "cents": 2500,
+          "currency": "USD"
+        },
+        {
+          "account": "paypal_payments_sent",
+          "cents": -2400,
+          "currency": "USD"
+        },
+        {
+          "account": "discount_received",
+          "cents": -100,
+          "currency": "USD"
+        }
+      ],
+      "provider_resource_id": "82L451107A123522J",
+      "provider_resource_type": "capture"
+    }
+  ],
+  "obligation_position": {
+    "authorized_concession": 100,
+    "cash_applied": 2400,
+    "original_open": 2500,
+    "remaining_open": 0,
+    "status": "settled"
+  },
+  "outbox": [
+    {
+      "attempts": 1,
+      "id": 1,
+      "kind": "create_payment_session",
+      "last_error": null,
+      "status": "done"
+    },
+    {
+      "attempts": 1,
+      "id": 2,
+      "kind": "reconcile_payment",
+      "last_error": null,
+      "status": "done"
+    }
+  ],
+  "provider": {
+    "capture": {
+      "amount": "USD 24.00",
+      "create_time": "2026-11-12T18:24:35Z",
+      "debug_id": "f624459cdea03",
+      "exchange_direction": "USD->CAD",
+      "exchange_rate": "1.37241975",
+      "final_capture": true,
+      "gross": "USD 24.00",
+      "http_status": 200,
+      "id": "82L451107A123522J",
+      "invoice_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+      "net": "USD 23.00",
+      "payee_fingerprint": "redacted:6dbc83888cc3",
+      "payee_matches_binding": true,
+      "paypal_fee": "USD 1.00",
+      "receivable": "CAD 31.57",
+      "seller_protection": "ELIGIBLE",
+      "status": "COMPLETED"
+    },
+    "invoice": {
+      "currency": "USD",
+      "debug_id": "f5577964f3d63",
+      "discount_cents": 100,
+      "due_cents": 0,
+      "http_status": 200,
+      "id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+      "item_total_cents": 2500,
+      "number": "ELIDE-4E480F60A4F8",
+      "paid_cents": 2400,
+      "status": "PAID",
+      "strict_paid_problems": [],
+      "total_cents": 2400,
+      "transaction_ids": [
+        "82L451107A123522J"
+      ],
+      "transaction_payment_date_time": "2026-11-12T10:24:36Z",
+      "transaction_statuses": [
+        "SUCCESS"
+      ],
+      "transaction_type": "PAYPAL",
+      "transactions": 1
+    },
+    "note": "payer identity: PayPal's invoice and capture do not identify the paying account; the invoice recipient is the approved Sandbox payer (redacted:94281907e2c4)"
+  },
+  "run_id": "20261112T182623Z",
+  "settlement_events": [
+    {
+      "amount_cents": 2400,
+      "currency": "USD",
+      "event_id": "paypal_capture:82l451107a123522j",
+      "kind": "cash_applied",
+      "occurred_at": "2026-11-12T18:24:35+00:00"
+    }
+  ],
+  "settlement_records": [
+    {
+      "bundle_sha256": "8c226d7469bd8315b0e5b0d2ccc3573b38affe31fd612f1181d7d38dd619389c",
+      "capture_create_time": "2026-11-12T18:24:35+00:00",
+      "capture_id": "82L451107A123522J",
+      "capture_status": "COMPLETED",
+      "check_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "credit_cents": 3157,
+      "credit_currency": "CAD",
+      "environment": "sandbox",
+      "exchange_rate": "1.37241975",
+      "fee_cents": 100,
+      "gross_cents": 2400,
+      "gross_currency": "USD",
+      "intent_id": "pin_7452d6099eaf9caf",
+      "invoice_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+      "invoice_status": "PAID",
+      "net_cents": 2300,
+      "payee_fingerprint": "redacted:6dbc83888cc3",
+      "payee_merchant": "pilot_seller",
+      "payer_merchant": "pilot_buyer",
+      "provider": "paypal",
+      "receipt_id": "paypal_capture:82l451107a123522j",
+      "recorded_at": "2026-11-12T18:26:13.320852+00:00"
+    }
+  ],
+  "stage": "after-booking",
+  "state_transitions": [
+    "approved -> approved (RELEASED_BY_PAYER) at 2026-11-12T18:13:11.713037+00:00",
+    "approved -> session_pending (DISPATCHED) at 2026-11-12T18:18:56.239980+00:00",
+    "session_pending -> payer_action_pending (INVOICE_SENT) at 2026-11-12T18:18:59.026078+00:00",
+    "payer_action_pending -> provider_confirmed (PROVIDER_PAID_VERIFIED) at 2026-11-12T18:26:13.320852+00:00",
+    "provider_confirmed -> reconciled (BOOKED_AND_CHECKED) at 2026-11-12T18:26:13.320852+00:00"
+  ],
+  "trial_balance": {
+    "CAD": 0,
+    "USD": 0
+  }
+}

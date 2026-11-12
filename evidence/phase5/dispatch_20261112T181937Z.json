@@ -1,0 +1,158 @@
+{
+  "commitments": [
+    {
+      "amount_cents": 2400,
+      "commitment_id": "pi:pin_7452d6099eaf9caf",
+      "kind": "reservation",
+      "released_at": null
+    }
+  ],
+  "environment": "sandbox",
+  "evidence_class": "Sandbox-verified (provider GET) for the invoice; payment not yet made",
+  "independent_get": {
+    "created": "2026-11-12T18:18:57Z",
+    "currency": "USD",
+    "debug_id": "f238450886e15",
+    "due_cents": 2400,
+    "due_date": "2026-11-15",
+    "first_sent": "2026-11-12T18:18:58Z",
+    "http_status": 200,
+    "invoice_discount_cents": 100,
+    "invoice_discount_sign": "negative",
+    "invoice_number": "ELIDE-4E480F60A4F8",
+    "item_total_cents": 2500,
+    "partial_payment_allowed": null,
+    "payment_term": "DUE_ON_DATE_SPECIFIED",
+    "recipient_count": 1,
+    "recipient_fingerprint": "redacted:94281907e2c4",
+    "recipient_view_url_present": true,
+    "status": "SENT",
+    "terms_problems": [],
+    "tips_allowed": false,
+    "total_cents": 2400,
+    "transactions": 0
+  },
+  "intent": {
+    "amount_cents": 2400,
+    "authorization_id": "pau_8d756a08712328c3",
+    "commitment_id": "pi:pin_7452d6099eaf9caf",
+    "intent_id": "pin_7452d6099eaf9caf",
+    "obligation_id": "pilot_001",
+    "revision_no": 3,
+    "status": "payer_action_pending",
+    "status_reason": "INVOICE_SENT",
+    "status_updated_at": "2026-11-12T18:18:59.026078+00:00"
+  },
+  "outbox": [
+    {
+      "attempts": 0,
+      "available_at": "2026-11-12T18:19:59.026078+00:00",
+      "finished_at": null,
+      "id": 2,
+      "kind": "reconcile_payment",
+      "last_error": null,
+      "status": "pending"
+    },
+    {
+      "attempts": 1,
+      "available_at": "2026-11-12T18:13:11.713037+00:00",
+      "finished_at": "2026-11-12T18:18:59.039627+00:00",
+      "id": 1,
+      "kind": "create_payment_session",
+      "last_error": null,
+      "status": "done"
+    }
+  ],
+  "provider_operations": [
+    {
+      "attempt_no": 1,
+      "debug_id": "f509221afa3c5",
+      "finished_at": "2026-11-12T18:18:57.385201+00:00",
+      "http_status": 201,
+      "id": 1,
+      "mutating": true,
+      "operation": "create_invoice",
+      "outcome_code": "ok",
+      "request_id": "elide-pin_7452d6099eaf9caf-create",
+      "started_at": "2026-11-12T18:18:56.321048+00:00",
+      "state": "succeeded",
+      "worker": "redacted-host:8776"
+    },
+    {
+      "attempt_no": null,
+      "debug_id": "f83528459a28b",
+      "finished_at": "2026-11-12T18:18:57.642212+00:00",
+      "http_status": 200,
+      "id": 2,
+      "mutating": false,
+      "operation": "get_invoice",
+      "outcome_code": "ok",
+      "request_id": null,
+      "started_at": "2026-11-12T18:18:57.401773+00:00",
+      "state": "succeeded",
+      "worker": "redacted-host:8776"
+    },
+    {
+      "attempt_no": 1,
+      "debug_id": "f835284258671",
+      "finished_at": "2026-11-12T18:18:58.737550+00:00",
+      "http_status": 200,
+      "id": 3,
+      "mutating": true,
+      "operation": "send_invoice",
+      "outcome_code": "ok",
+      "request_id": "elide-pin_7452d6099eaf9caf-send",
+      "started_at": "2026-11-12T18:18:57.649256+00:00",
+      "state": "succeeded",
+      "worker": "redacted-host:8776"
+    },
+    {
+      "attempt_no": null,
+      "debug_id": "f530962a77a10",
+      "finished_at": "2026-11-12T18:18:59.018197+00:00",
+      "http_status": 200,
+      "id": 4,
+      "mutating": false,
+      "operation": "get_invoice",
+      "outcome_code": "ok",
+      "request_id": null,
+      "started_at": "2026-11-12T18:18:58.744984+00:00",
+      "state": "succeeded",
+      "worker": "redacted-host:8776"
+    }
+  ],
+  "provider_requests": [
+    {
+      "created_at": "2026-11-12T18:18:56.321048+00:00",
+      "operation": "create_invoice",
+      "request_id": "elide-pin_7452d6099eaf9caf-create",
+      "request_sha256": "82f206c21dd0d139fdd328829b299e66efb432eca72c85a985a86f7f689e455a"
+    },
+    {
+      "created_at": "2026-11-12T18:18:57.649256+00:00",
+      "operation": "send_invoice",
+      "request_id": "elide-pin_7452d6099eaf9caf-send",
+      "request_sha256": "7f5e2386dbbbea0ccc862b0d02c66e3525f180eb8c1444327bc34e3175e07c42"
+    }
+  ],
+  "run_id": "20261112T181937Z",
+  "session": {
+    "currency": "USD",
+    "draft_created_at": "2026-11-12T18:18:57.394305+00:00",
+    "due_date": "2026-11-15",
+    "expected_discount_cents": 100,
+    "expected_item_cents": 2500,
+    "expected_total_cents": 2400,
+    "invoice_number": "ELIDE-4E480F60A4F8",
+    "last_provider_status": "SENT",
+    "pay_deadline": "2026-11-15T13:13:32.717216+00:00",
+    "provider_invoice_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+    "sent_at": "2026-11-12T18:18:59.026078+00:00",
+    "session_id": "ps_63ceb64c77855c88"
+  },
+  "state_transitions": [
+    "approved -> approved (RELEASED_BY_PAYER) by user:usr_0a791cecf8e5f0ff at 2026-11-12T18:13:11.713037+00:00",
+    "approved -> session_pending (DISPATCHED) by worker:redacted-host:8776 at 2026-11-12T18:18:56.239980+00:00",
+    "session_pending -> payer_action_pending (INVOICE_SENT) by worker:redacted-host:8776 at 2026-11-12T18:18:59.026078+00:00"
+  ]
+}

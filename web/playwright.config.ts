@@ -22,7 +22,9 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `uv run python scripts/e2e_setup.py && uv run uvicorn api.app.main:app --host 127.0.0.1 --port ${API}`,
+      // The harness app = the real API + an in-process MOCK PayPal + loopback-only test
+      // controls (scripts/e2e_app.py). No real PayPal call can be made from these tests.
+      command: `uv run python scripts/e2e_setup.py && uv run uvicorn --app-dir scripts e2e_app:app --host 127.0.0.1 --port ${API}`,
       cwd: "..",
       url: `http://127.0.0.1:${API}/health`,
       reuseExistingServer: false,
@@ -31,6 +33,9 @@ export default defineConfig({
         DATABASE_URL: e2eDb,
         APP_ORIGINS: JSON.stringify([`http://127.0.0.1:${WEB}`]),
         APP_ENV: process.env.APP_ENV ?? "local",
+        ELIDE_E2E_HARNESS: "1",
+        PAYMENT_PROVIDER: "none",
+        PAYMENTS_EXECUTION_ENABLED: "false",
       },
     },
     {

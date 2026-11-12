@@ -5,6 +5,7 @@ import type { PaymentIntent, PlanLeg, PlanSummary, PlanView } from "../api/types
 import { useAuth } from "../auth/AuthContext";
 import { Badge, Card, Empty, ErrorBanner, Field, Loading, Notice, StateLabel } from "../components/ui";
 import { useResource } from "../components/useResource";
+import { IntentRow, SettlementsCard } from "./Execution";
 import { href } from "./route";
 import type { PageProps } from "./Shell";
 
@@ -14,6 +15,8 @@ const AUTH_LABEL: Record<string, { label: string; tone: "good" | "warn" | "bad" 
   pending: { label: "PENDING YOUR DECISION", tone: "warn" },
   expired: { label: "APPROVAL EXPIRED", tone: "bad" },
   needs_reapproval: { label: "CONDITIONS CHANGED: RE-APPROVE", tone: "bad" },
+  in_execution: { label: "IN EXECUTION", tone: "good" },
+  in_execution_conditions_changed: { label: "IN EXECUTION: CONDITIONS CHANGED", tone: "bad" },
 };
 
 /** Durable plans are created explicitly (POST); viewing never writes anything. */
@@ -155,24 +158,20 @@ export function PlanPage({ merchant, membership }: PageProps) {
               </thead>
               <tbody>
                 {intents.data?.intents.map((i) => (
-                  <tr key={i.intent_id}>
-                    <td className="font-mono text-xs">{i.intent_id}</td>
-                    <td className="font-mono text-xs">{i.obligation_id}</td>
-                    <td>{i.payee_merchant}</td>
-                    <td>{money(i.amount_cents)}</td>
-                    <td>
-                      <StateLabel state={i.status === "awaiting_payer_action" ? "INTENT_CREATED_NOT_SENT" : i.status} />
-                    </td>
-                    <td>
-                      <Badge tone="warn">{i.execution === "disabled" ? "held: no PayPal call" : i.execution}</Badge>
-                    </td>
-                  </tr>
+                  <IntentRow
+                    key={i.intent_id}
+                    intent={i}
+                    merchant={merchant}
+                    canAuthorize={canAuthorize}
+                    onChange={reload}
+                  />
                 ))}
               </tbody>
             </table>
           </>
         )}
       </Card>
+      <SettlementsCard merchant={merchant} />
     </>
   );
 }
@@ -270,6 +269,15 @@ function LegCard({
       {iPay && auth.status === "needs_reapproval" && (
         <div className="mt-3">
           <Notice tone="warn">{auth.reason ?? "The conditions of your earlier approval changed."}</Notice>
+        </div>
+      )}
+      {(auth.status === "in_execution" || auth.status === "in_execution_conditions_changed") && (
+        <div className="mt-3">
+          <Notice tone={auth.status === "in_execution" ? "info" : "warn"}>
+            {auth.status === "in_execution"
+              ? `This payment is in execution (intent ${auth.intent_id}). It is not planned or approved again.`
+              : `This payment is in execution (intent ${auth.intent_id}), but its approval no longer holds (${(auth.problems ?? []).join(", ")}). It will not be sent to PayPal as it stands.`}
+          </Notice>
         </div>
       )}
       {iPay && auth.status === "expired" && (

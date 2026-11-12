@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_, select
 
+from api.accounting.payer_postings import PaymentSource
 from api.ai.adapter import UnconfiguredLLMAdapter
 from api.ai.schemas import PolicyExtraction
 from api.app.auth import service as auth_service
@@ -28,6 +29,10 @@ from api.app.auth.permissions import Permission as P  # noqa: N817
 from api.app.auth.tables import app_user, membership, merchant_org
 from api.config import get_settings
 from api.domain.money import Money
+from api.execution import views as exec_views
+from api.execution.attribution import attest_payment_source as attest_source
+from api.execution.release import release_held_intent
+from api.execution.runtime import payer_email_resolver
 from api.negotiation.counteroffer import NegotiationCase, propose_counteroffer
 from api.negotiation.explain import narrate
 from api.opportunities.analysis import facts
@@ -122,8 +127,13 @@ def _my_invoices(conn, c: MerchantCtx) -> list[dict[str, Any]]:
                 offer.c.obligation_id == oid, offer.c.status == "proposed"
             )
         ).scalar_one_or_none()
+        # An invoice can have several intents over time (a failed or expired one, then a
+        # new one); the newest is its current payment state.
         intent = conn.execute(
-            select(payment_intent.c.status).where(payment_intent.c.obligation_id == oid)
+            select(payment_intent.c.status)
+            .where(payment_intent.c.obligation_id == oid)
+            .order_by(payment_intent.c.created_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
         out.append(
             {
@@ -146,15 +156,26 @@ def _my_invoices(conn, c: MerchantCtx) -> list[dict[str, Any]]:
     return out
 
 
+PAYMENT_STATE_LABELS = {
+    "approved": "INTENT_CREATED_NOT_SENT",
+    "session_pending": "PREPARING_PAYPAL_INVOICE",
+    "payer_action_pending": "AWAITING_PAYER_AT_PAYPAL",
+    "provider_pending": "PROVIDER_PENDING",
+    "provider_unknown": "PROVIDER_OUTCOME_UNKNOWN",
+    "provider_confirmed": "PAYPAL_CONFIRMED_NOT_BOOKED",
+    "reconciled": "PAYPAL_CONFIRMED_RECONCILED",
+    "failed": "FAILED",
+    "expired": "EXPIRED",
+    "cancelled": "CANCELLED",
+    "exception": "NEEDS_OPERATOR_REVIEW",
+}
+
+
 def _payment_state(intent_status: str | None) -> str:
-    """Distinct labels (doc 13): nothing here is ever PAYPAL_CONFIRMED in P4."""
+    """Distinct labels (doc 13). PAYPAL_CONFIRMED never means spendable (D006)."""
     if intent_status is None:
         return "NOT_STARTED"
-    return {
-        "awaiting_payer_action": "INTENT_CREATED_NOT_SENT",
-        "provider_pending": "PROVIDER_PENDING",
-        "provider_confirmed": "PAYPAL_CONFIRMED",
-    }.get(intent_status, intent_status.upper())
+    return PAYMENT_STATE_LABELS.get(intent_status, intent_status.upper())
 
 
 # --- read models ---------------------------------------------------------------------------
@@ -567,7 +588,199 @@ def _execution_enabled(c: MerchantCtx) -> bool:
 @router.get("/payment-intents")
 def list_intents(c: Read) -> dict[str, Any]:
     with c.engine.begin() as conn:
-        return {"intents": payments.intents_for(conn, c.merchant_id)}
+        return {
+            "intents": payments.intents_for(
+                conn, c.merchant_id, execution_enabled=_execution_enabled(c)
+            )
+        }
+
+
+# --- P5 execution (ADR-0012 §8, §9) ---------------------------------------------------------
+@router.get("/payment-intents/{intent_id}")
+def intent_detail(intent_id: str, c: Read) -> dict[str, Any]:
+    with c.engine.connect() as conn:
+        return exec_views.intent_detail(conn, c.merchant_id, intent_id)
+
+
+def _payer_email(c: MerchantCtx) -> str | None:
+    override = getattr(c.request.app.state, "payer_email", None)
+    if override is not None:
+        return override()
+    return payer_email_resolver(get_settings())()
+
+
+@router.get("/payment-intents/{intent_id}/payer-link")
+def payer_link(intent_id: str, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True)) -> JSONResponse:
+    """The PayPal-hosted payer page, fetched by GET now; never stored or cached."""
+    with c.engine.begin() as conn:
+        url = exec_views.payer_link(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            provider=getattr(c.request.app.state, "payment_provider", None),
+            payer_email=_payer_email(c),
+            at=c.now,
+        )
+    return JSONResponse(
+        {
+            "intent_id": intent_id,
+            "url": url,
+            "host": "www.sandbox.paypal.com",
+            "note": "PayPal Sandbox hosted page; you approve the payment at PayPal, not in Elide",
+        },
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+@router.post("/payment-intents/{intent_id}/release")
+def release_intent(
+    intent_id: str, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True), key: IdemKey = None
+) -> dict[str, Any]:
+    """The payer's explicit, re-verified confirmation to dispatch a HELD intent (the same
+    intent, authorization and cash reservation). Never automatic; the worker revalidates
+    again before any PayPal call."""
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return release_held_intent(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            at=c.now,
+            execution_enabled=_execution_enabled(c),
+            provider=getattr(c.request.app.state, "payment_provider", None),
+            payer_email=_payer_email(c),
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route=f"intents.release:{intent_id}",
+        body={},
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
+
+
+@router.post("/payment-intents/{intent_id}/cancel")
+def cancel_intent(
+    intent_id: str, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True), key: IdemKey = None
+) -> dict[str, Any]:
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return exec_views.cancel(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            at=c.now,
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route=f"intents.cancel:{intent_id}",
+        body={},
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
+
+
+class AttestBody(_Body):
+    verified_spendable_cents: int = Field(ge=0, le=10**12)
+    protected_reserve_cents: int = Field(ge=0, le=10**12)
+    valid_hours: int = Field(default=24, ge=1, le=72)
+    included_receipt_ids: list[str] = Field(default_factory=list, max_length=50)
+    included_outflow_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+@router.post("/capacity-evidence")
+def attest_capacity(
+    body: AttestBody, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True), key: IdemKey = None
+) -> dict[str, Any]:
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return exec_views.attest_capacity(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            spendable_cents=body.verified_spendable_cents,
+            reserve_cents=body.protected_reserve_cents,
+            valid_hours=body.valid_hours,
+            included_receipt_ids=body.included_receipt_ids,
+            included_outflow_ids=body.included_outflow_ids,
+            at=c.now,
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route="capacity.attest",
+        body=body.model_dump(mode="json"),
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
+
+
+class PaymentSourceBody(_Body):
+    source: Literal["own_paypal_account", "third_party"]
+
+
+@router.post("/payment-intents/{intent_id}/payment-source")
+def attest_payment_source(
+    intent_id: str,
+    body: PaymentSourceBody,
+    c: ctx(P.PAYMENT_AUTHORIZE, step_up=True),
+    key: IdemKey = None,
+) -> dict[str, Any]:
+    """The payer merchant's own statement of where a settled payment's money came from
+    (merchant-attested; PayPal does not identify the paying account). Once per payment."""
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return attest_source(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            source=PaymentSource(body.source),
+            at=c.now,
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route=f"intents.payment_source:{intent_id}",
+        body=body.model_dump(mode="json"),
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
+
+
+@router.get("/settlements")
+def list_settlements(c: Read) -> dict[str, Any]:
+    with c.engine.connect() as conn:
+        return {"settlements": exec_views.settlements_for(conn, c.merchant_id)}
 
 
 # --- policy --------------------------------------------------------------------------------

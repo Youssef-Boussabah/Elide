@@ -33,9 +33,9 @@ from api.planning.plan import verify_plan_record
 from api.planning.solver import ScheduledLeg
 from api.planning.verifier import verify
 from api.workflow import audit, conditions, disclosure
-from api.workflow.networks import LoadedNetwork, load_network
+from api.workflow.networks import ACTIVE_INTENT, LoadedNetwork, load_network
 from api.workflow.store import ConflictError, NotVisibleError, WorkflowError, active_participants
-from api.workflow.tables import payment_authorization, plan_snapshot
+from api.workflow.tables import payment_authorization, payment_intent, plan_snapshot
 
 AUTH_TTL = timedelta(hours=24)
 REUSE_WINDOW = AUTH_TTL  # a snapshot older than this is never reused (its approvals expire)
@@ -437,6 +437,80 @@ def authorize_leg(
     return {"authorization_id": auth_id, "decision": decision, "money_moved": False}
 
 
+# Intent states that still need the approval's conditions to hold before PayPal is asked.
+PRE_DISPATCH = ("approved", "session_pending")
+
+
+def _executing_intents(conn: Connection, record: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The non-terminal intent (if any) that owns each of this plan's invoices."""
+    oids = sorted({x["obligation_id"] for x in record["selected_legs"]})
+    if not oids:
+        return {}
+    pi = payment_intent.c
+    rows = conn.execute(
+        select(pi.intent_id, pi.obligation_id, pi.status, pi.status_reason, pi.authorization_id)
+        .where(pi.obligation_id.in_(oids), pi.status.in_(ACTIVE_INTENT))
+        .order_by(pi.created_at)
+    ).mappings()
+    return {r["obligation_id"]: dict(r) for r in rows}
+
+
+def _in_execution_status(
+    conn: Connection,
+    snap: dict[str, Any],
+    leg: dict[str, Any],
+    live: dict[str, Any],
+    merchant_id: str,
+    at: datetime,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "status": "in_execution",
+        "intent_id": live["intent_id"],
+        "intent_status": live["status"],
+    }
+    if leg["payer"] != merchant_id:
+        return out  # the payee learns the payment is in execution, nothing about its approval
+    out["authorization_id"] = live["authorization_id"]
+    if live["status"] not in PRE_DISPATCH:
+        return out  # already at PayPal: the approval's job is done
+    a = conn.execute(
+        select(payment_authorization).where(
+            payment_authorization.c.authorization_id == live["authorization_id"]
+        )
+    ).first()
+    problems: list[str] = []
+    if a is None or a.decision != "approve":
+        problems.append("NOT_APPROVED")
+    elif a.expires_at <= at:
+        problems.append("AUTHORIZATION_EXPIRED")
+    else:
+        try:
+            exec_net = load_network(
+                conn,
+                snap["network_id"],
+                initiator=snap["record"]["focal_merchant"],
+                as_of=at,
+                executing_intent=live["intent_id"],
+            )
+            cond = conditions.payment_conditions(conn, exec_net, leg, at)
+            if cond is None or conditions.digest(cond) != a.conditions_digest:
+                problems.append("CONDITIONS_CHANGED")
+            elif verify_leg_now(exec_net, leg, at):
+                problems.append("VERIFIER_REJECTED")
+        except NotVisibleError:
+            problems.append("CONDITIONS_CHANGED")
+    if problems:
+        out["status"] = "in_execution_conditions_changed"
+        out["problems"] = problems
+        out["reason"] = (
+            "this payment is in execution, but its approval no longer holds under current "
+            "conditions; it will not be sent to PayPal as it stands"
+        )
+    else:
+        out["expires_at"] = a.expires_at.isoformat()
+    return out
+
+
 def durable_plan_view(conn: Connection, snap: dict[str, Any], merchant_id: str, at: datetime):
     """Allowlisted view of a durable plan, with each leg's CURRENT authorization status."""
     record = snap["record"]
@@ -445,13 +519,26 @@ def durable_plan_view(conn: Connection, snap: dict[str, Any], merchant_id: str, 
     view = disclosure.plan_view(record, merchant_id, d)
     view["durable"] = True
     by_leg = {x["leg_id"]: x for x in record["selected_legs"]}
+    executing = _executing_intents(conn, record)
     loaded = None
     for item in view["my_legs"]:
         full = by_leg[item["leg_id"]]
+        live = executing.get(full["obligation_id"])
+        if live is not None:
+            # An intent already owns this invoice: never offer a second approval, and judge
+            # its approval the way execution revalidation does (ADR-0012 §5).
+            item["payment_authorization"] = _in_execution_status(
+                conn, snap, full, live, merchant_id, at
+            )
+            continue
         try:
             if loaded is None:
                 loaded = load_network(
-                    conn, snap["network_id"], initiator=record["focal_merchant"], as_of=at
+                    conn,
+                    snap["network_id"],
+                    initiator=record["focal_merchant"],
+                    as_of=at,
+                    executing_intents=tuple(i["intent_id"] for i in executing.values()),
                 )
             cond = conditions.payment_conditions(conn, loaded, full, at)
         except NotVisibleError:
@@ -472,6 +559,8 @@ def durable_plan_view(conn: Connection, snap: dict[str, Any], merchant_id: str, 
                 "fee_ceiling_cents": t["fee_ceiling_cents"],
                 "expires_at": t["expires_at"].isoformat(),
                 "terms_agreed": full["terms"] == "in_force",
+                # In-execution invoices are included (their own reservations excluded):
+                # leaving future optimization does not make the plan stale.
                 "plan_current": loaded is not None
                 and economic_digest(loaded) == snap["economic_digest"],
             }

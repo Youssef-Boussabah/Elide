@@ -21,5 +21,6 @@ async def paypal_webhook(request: Request) -> JSONResponse:
         body,
         environment="sandbox",
         now=now_of(request),
+        fetch_dispatch=getattr(request.app.state, "payment_provider", None) is not None,
     )
     return JSONResponse(status_code=out.status, content=out.body)

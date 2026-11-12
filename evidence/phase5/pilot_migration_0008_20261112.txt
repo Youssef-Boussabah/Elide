@@ -1,0 +1,9 @@
+# Pilot database migration 0007 -> 0008 (2026-11-12T19:13:03Z). Local DDL + append-only corrections; no PayPal call.
+# Columns: version | journal_entry | journal_posting | provider_settlement | settlement_events | commitments | trial balance | check_sha256 | md5(journal_entry rows) | md5(provider_settlement row)
+before: 0007_p5_request_identity|5|17|1|1|2|CAD:0,USD:0|0000000000000000000000000000000000000000000000000000000000000000|109d7d674e650dc55f3209525bb4b500|8353b2d44ce2d5f9e1098bc33527e0d4
+after:  0008_p5_verification_attribution|5|17|1|1|2|CAD:0,USD:0|0000000000000000000000000000000000000000000000000000000000000000|109d7d674e650dc55f3209525bb4b500|8353b2d44ce2d5f9e1098bc33527e0d4
+# Appended evidence_correction rows (subject_table|subject_id|aspect|corrected_to):
+journal_entry|5|payer_source_debit|unverified
+provider_settlement|82L451107A123522J|payer_merchant|debtor_of_discharged_obligation
+provider_settlement|82L451107A123522J|check_sha256|placeholder_not_a_digest
+capacity_commitment|so:pin_7452d6099eaf9caf|outflow_basis|presumed_outflow_unverified_source

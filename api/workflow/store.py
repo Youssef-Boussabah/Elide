@@ -23,6 +23,8 @@ from api.domain.invoice import (
     Provenance,
     ProviderRef,
     RevisionStatus,
+    SettlementEvent,
+    SettlementKind,
     SourceKind,
 )
 from api.domain.money import USD, Money
@@ -201,8 +203,15 @@ def load_record(conn: Connection, obligation_id: str, *, lock: bool = False) -> 
         ).mappings()
     ]
     record = InvoiceRecord.open(domain_ob, revs[0])
-    for r in revs[1:]:
-        record = record.add_revision(r)  # re-validates every P1 rule
+    events = [_settlement_event(e) for e in _settlement_rows(conn, obligation_id)]
+    # Revisions and P5 settlement events are applied in time order, so every P1 rule
+    # (over-settlement, the settlement identity, no backdating) is re-checked on load.
+    steps = sorted(
+        [(r.created_at, 0, r) for r in revs[1:]] + [(e.occurred_at, 1, e) for e in events],
+        key=lambda t: (t[0], t[1]),
+    )
+    for _, kind, item in steps:
+        record = record.add_revision(item) if kind == 0 else record.apply(item)
     fee = FeeTerms(
         payer_fee=Money(int(ob["payer_fee_cents"]), USD),
         payee_fee=Money(int(ob["payee_fee_cents"]), USD),
@@ -264,3 +273,30 @@ def network_obligation_ids(conn: Connection, network_id: str) -> list[str]:
 
 def iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
+
+
+def _settlement_rows(conn: Connection, obligation_id: str) -> list[Any]:
+    from api.execution.tables import obligation_settlement_event as ose
+
+    return list(
+        conn.execute(
+            select(ose).where(ose.c.obligation_id == obligation_id).order_by(ose.c.occurred_at)
+        ).mappings()
+    )
+
+
+def _settlement_event(r: Any) -> SettlementEvent:
+    return SettlementEvent(
+        event_id=r["event_id"],
+        obligation_id=r["obligation_id"],
+        kind=SettlementKind(r["kind"]),
+        amount=Money(int(r["amount_cents"]), r["currency"]),
+        occurred_at=r["occurred_at"],
+        provenance=Provenance(
+            SourceKind(r["provenance_source"]),
+            r["provenance_reference"],
+            r["provenance_recorded_at"],
+            r["provenance_evidence_ref"],
+        ),
+        reverses_event_id=r["reverses_event_id"],
+    )

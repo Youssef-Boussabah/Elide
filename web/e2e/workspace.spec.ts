@@ -117,7 +117,12 @@ test.describe.serial("merchant workspace", () => {
 
     await buyer.goto("/#/m/buyer/plan");
     const leg = buyer.getByRole("article", { name: /Leg food_001:r\d+/ });
-    await expect(leg.getByText("CONDITIONS CHANGED: RE-APPROVE")).toBeVisible();
+    // food_001 is in execution (its intent was prepared above). Since the P5 gate fix
+    // (evidence/phase5/pilot_intent_held_and_label_2026-11-12.md) the change is reported as
+    // IN EXECUTION: CONDITIONS CHANGED, and no second approval is offered for that invoice.
+    await expect(leg.getByText("IN EXECUTION: CONDITIONS CHANGED")).toBeVisible();
+    await expect(leg).toContainText("CONDITIONS_CHANGED");
     await expect(leg.getByText("APPROVED", { exact: true })).toHaveCount(0);
+    await expect(leg.getByRole("button", { name: "Approve my payment…" })).toHaveCount(0);
   });
 });

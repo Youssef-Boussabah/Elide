@@ -125,6 +125,9 @@ class CapacityEvidence:
     held: Money | None = None
     pending: Money | None = None
     included_receipt_ids: frozenset[str] = field(default_factory=frozenset)
+    # Settled outgoing payments (commitment ids) already reflected in this balance (P5,
+    # ADR-0012 §4.5). Only an observation that lists an outflow releases its commitment.
+    included_outflow_ids: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         check_id(self.evidence_id, "evidence_id")
@@ -139,6 +142,10 @@ class CapacityEvidence:
             raise CapacityError("included_receipt_ids must be a frozenset")
         for rid in self.included_receipt_ids:
             check_id(rid, "included receipt_id")
+        if not isinstance(self.included_outflow_ids, frozenset):
+            raise CapacityError("included_outflow_ids must be a frozenset")
+        for oid in self.included_outflow_ids:
+            check_id(oid, "included outflow id")
         check_aware(self.observed_at, "observed_at")
         check_aware(self.valid_until, "valid_until")
         if self.valid_until <= self.observed_at:

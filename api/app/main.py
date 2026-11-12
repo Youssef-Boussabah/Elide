@@ -12,8 +12,8 @@ from api.app.workspace import router as workspace_router
 from api.app.workspace import workflow_error_handler
 from api.config import get_settings
 from api.db import check_database
+from api.execution.runtime import build_provider, build_verifier
 from api.workflow.store import WorkflowError
-from api.workflow.webhooks import RefusingVerifier
 
 VERSION = "0.0.1"
 
@@ -32,7 +32,11 @@ def create_app() -> FastAPI:
     app.state.clock = None
     app.state.session_policy = None
     app.state.workspace_llm = None  # no paid inference unless explicitly configured
-    app.state.webhook_verifier = RefusingVerifier()
+    # P5 (ADR-0012): both default to "off". The verifier exists only with PAYPAL_WEBHOOK_ID;
+    # the provider only with PAYMENT_PROVIDER (none by default). Provider-mutating calls are
+    # made by the worker, never by a request handler.
+    app.state.webhook_verifier = build_verifier(settings)
+    app.state.payment_provider = build_provider(settings)
     app.add_exception_handler(WorkflowError, workflow_error_handler)
 
     @app.get("/health")

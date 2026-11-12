@@ -1,0 +1,127 @@
+{
+  "as_of": "2026-11-12T16:48:55.658312+00:00",
+  "revisions": [
+    {
+      "no": 1,
+      "status": "authorized",
+      "due_at": "2026-11-22T13:13:32.717216+00:00",
+      "concession_cents": 0,
+      "authorized_by": []
+    },
+    {
+      "no": 2,
+      "status": "draft",
+      "due_at": "2026-11-15T13:13:32.717216+00:00",
+      "concession_cents": 100,
+      "authorized_by": [
+        "pilot_seller"
+      ]
+    },
+    {
+      "no": 3,
+      "status": "authorized",
+      "due_at": "2026-11-15T13:13:32.717216+00:00",
+      "concession_cents": 100,
+      "authorized_by": [
+        "pilot_buyer",
+        "pilot_seller"
+      ]
+    }
+  ],
+  "edge": {
+    "face": 2500,
+    "in_force_concession": 100,
+    "revision_no": 3,
+    "due_at": "2026-11-15T13:13:32.717216+00:00",
+    "open": 2400
+  },
+  "payer_position": {
+    "available": 20000,
+    "protected_reserve": 5000,
+    "committed": 0,
+    "evidence_kind": "merchant_attested",
+    "valid_until": "2026-11-13T16:34:59.663884+00:00"
+  },
+  "payer_policy": {
+    "min_early_discount": 100,
+    "hurdle_bps": 800,
+    "min_net_benefit_cents": 0,
+    "source": "confirmed policy v1 (authenticated_merchant_confirmation)"
+  },
+  "slots": [
+    {
+      "t": 0,
+      "start": "2026-11-12T16:48:55.658312+00:00"
+    },
+    {
+      "t": 1,
+      "start": "2026-11-13T16:48:55.658312+00:00"
+    },
+    {
+      "t": 2,
+      "start": "2026-11-14T16:48:55.658312+00:00"
+    },
+    {
+      "t": 3,
+      "start": "2026-11-15T16:48:55.658312+00:00"
+    },
+    {
+      "t": 4,
+      "start": "2026-11-16T16:48:55.658312+00:00"
+    },
+    {
+      "t": 5,
+      "start": "2026-11-17T16:48:55.658312+00:00"
+    }
+  ],
+  "due_slot": 2,
+  "options": [
+    {
+      "option_id": "pilot_001:r3",
+      "terms": "in_force",
+      "cash": 2400,
+      "concession": 100,
+      "usable": true,
+      "slots": [
+        {
+          "t": 0,
+          "early": true,
+          "feasible": false,
+          "reasons": [
+            "EARLY_NEEDS_EXTRA_DISCOUNT(extra=0<min=100)"
+          ]
+        },
+        {
+          "t": 1,
+          "early": true,
+          "feasible": false,
+          "reasons": [
+            "CAPACITY_EVIDENCE_EXPIRED",
+            "EARLY_NEEDS_EXTRA_DISCOUNT(extra=0<min=100)"
+          ]
+        },
+        {
+          "t": 2,
+          "early": false,
+          "feasible": false,
+          "reasons": [
+            "CAPACITY_EVIDENCE_EXPIRED"
+          ]
+        },
+        {
+          "t": 3,
+          "early": false,
+          "feasible": false,
+          "reasons": [
+            "CAPACITY_EVIDENCE_EXPIRED",
+            "LATE"
+          ]
+        }
+      ]
+    }
+  ],
+  "solver": {
+    "status": "OPTIMAL",
+    "legs": []
+  }
+}

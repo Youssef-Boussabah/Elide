@@ -1,0 +1,227 @@
+{
+  "capture_id": "82L451107A123522J",
+  "checker_version": "elide-reconciliation-check/2",
+  "document_sha256": "4bf699c91fc8d9d2454b064c3347781ad4645427e6a701218a3670ea9fb21603",
+  "environment": "sandbox",
+  "evidence_class": "Sandbox-verified (fresh provider GETs) for the provider facts; the payer's source account remains unverified",
+  "evidence_corrections": [
+    {
+      "aspect": "payer_source_debit",
+      "corrected_by": "migration:0008_p5_verification_attribution",
+      "corrected_to": "unverified",
+      "recorded_as": "evidence_class=sandbox_verified",
+      "subject_id": "5",
+      "subject_table": "journal_entry"
+    },
+    {
+      "aspect": "payer_merchant",
+      "corrected_by": "migration:0008_p5_verification_attribution",
+      "corrected_to": "debtor_of_discharged_obligation",
+      "recorded_as": "payer_merchant=pilot_buyer",
+      "subject_id": "82L451107A123522J",
+      "subject_table": "provider_settlement"
+    },
+    {
+      "aspect": "check_sha256",
+      "corrected_by": "migration:0008_p5_verification_attribution",
+      "corrected_to": "placeholder_not_a_digest",
+      "recorded_as": "check_sha256=0000000000000000000000000000000000000000000000000000000000000000",
+      "subject_id": "82L451107A123522J",
+      "subject_table": "provider_settlement"
+    },
+    {
+      "aspect": "outflow_basis",
+      "corrected_by": "migration:0008_p5_verification_attribution",
+      "corrected_to": "presumed_outflow_unverified_source",
+      "recorded_as": "kind=settled_outflow",
+      "subject_id": "so:pin_7452d6099eaf9caf",
+      "subject_table": "capacity_commitment"
+    }
+  ],
+  "financial_rows_after": {
+    "capacity_commitment": 2,
+    "journal_entry": 5,
+    "journal_posting": 17,
+    "obligation_settlement_event": 1,
+    "payment_exception": 0,
+    "payment_source_attestation": 0,
+    "provider_settlement": 1,
+    "trial_balance": {
+      "CAD": 0,
+      "USD": 0
+    }
+  },
+  "financial_rows_before": {
+    "capacity_commitment": 2,
+    "journal_entry": 5,
+    "journal_posting": 17,
+    "obligation_settlement_event": 1,
+    "payment_exception": 0,
+    "payment_source_attestation": 0,
+    "provider_settlement": 1,
+    "trial_balance": {
+      "CAD": 0,
+      "USD": 0
+    }
+  },
+  "financial_rows_unchanged": true,
+  "historical_record": {
+    "bundle_sha256": "8c226d7469bd8315b0e5b0d2ccc3573b38affe31fd612f1181d7d38dd619389c",
+    "check_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "check_sha256_is_placeholder": true,
+    "payer_merchant_column": "pilot_buyer"
+  },
+  "intent": "pin_7452d6099eaf9caf",
+  "invoice_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+  "payer_attribution": {
+    "corrections": [
+      {
+        "aspect": "check_sha256",
+        "corrected_to": "placeholder_not_a_digest"
+      },
+      {
+        "aspect": "payer_merchant",
+        "corrected_to": "debtor_of_discharged_obligation"
+      }
+    ],
+    "obligation_settlement": "PROVIDER_CONFIRMED",
+    "outflow_commitment_basis": "PRESUMED_OUTFLOW_HELD_CONSERVATIVELY",
+    "payer_authorization": "MERCHANT_APPROVED",
+    "payment_source": "NOT_VERIFIED",
+    "payment_source_attested_at": null,
+    "payment_source_note": "PayPal confirms the invoice was paid and the payee received the money; it does not identify the paying account"
+  },
+  "problems": [],
+  "provider_facts": {
+    "capture_amount_cents": 2400,
+    "capture_create_time": "2026-11-12T18:24:35+00:00",
+    "capture_id": "82L451107A123522J",
+    "capture_invoice_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+    "capture_status": "COMPLETED",
+    "credit_cents": 3157,
+    "credit_currency": "CAD",
+    "discount_cents": 100,
+    "due_cents": 0,
+    "fee_cents": 100,
+    "fee_currency": "USD",
+    "final_capture": true,
+    "gross_cents": 2400,
+    "gross_currency": "USD",
+    "invoice_currency": "USD",
+    "invoice_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+    "invoice_status": "PAID",
+    "item_total_cents": 2500,
+    "net_cents": 2300,
+    "net_currency": "USD",
+    "other_charges": [],
+    "paid_cents": 2400,
+    "payee_fingerprint": "redacted:6dbc83888cc3",
+    "rate": "1.37241975",
+    "rate_source": "USD",
+    "rate_target": "CAD",
+    "total_cents": 2400,
+    "transactions": [
+      [
+        "82L451107A123522J",
+        "SUCCESS"
+      ]
+    ]
+  },
+  "provider_reads": {
+    "bodies_match_booking_time_reads": {
+      "capture": true,
+      "invoice": true
+    },
+    "capture": {
+      "debug_id": "f757989c9c6d1",
+      "http_status": 200
+    },
+    "invoice": {
+      "debug_id": "f7579890b6db0",
+      "http_status": 200
+    }
+  },
+  "records_examined": {
+    "commitments": [
+      {
+        "commitment_id": "pi:pin_7452d6099eaf9caf",
+        "row_sha256": "0fc9927869714b14fa9b81f9a68e41126b1c7e9ffcff6d493063607e30f43496"
+      },
+      {
+        "commitment_id": "so:pin_7452d6099eaf9caf",
+        "row_sha256": "f62c7c484eed68a9234ad4a4b9733b192b316e4742b0014361475abf44cb2f62"
+      }
+    ],
+    "evidence_corrections": [
+      "39ffb42696964ee5c39cd99d7726a1fd60bd4416708a9ba1c75506c39cc6061c"
+    ],
+    "invoicer_binding": "3078577500bbeaa667d813b02247a923616c23f507f3daf8abd28dff641cd74f",
+    "journal_entries": [
+      {
+        "content_sha256": "6bc0b5a3452d15d1a902ae419037bf49b9e38efdb5e35ad3887831ee37c16a45",
+        "entity_id": "pilot_seller",
+        "id": 1,
+        "kind": "invoice_issued",
+        "postings_sha256": "46727bbe883a2f3ba1fcf35f7d50fe17195f9bbc98aba9db9e596cb057e1bffa"
+      },
+      {
+        "content_sha256": "f96afb961627ceb0dd958f61fce209a3d9ecfa23f4a72d010a3a629194302a82",
+        "entity_id": "pilot_seller",
+        "id": 2,
+        "kind": "concession_authorized",
+        "postings_sha256": "5e82f99adb5bfad23c6c4ec403cbccbf2fc41dc405e23cd1a02652f624563026"
+      },
+      {
+        "content_sha256": "284bfc218fde92b8b44c087a1a47eeccf1b0e6a8734489a59c8553a9dc997fea",
+        "entity_id": "pilot_seller",
+        "id": 3,
+        "kind": "provider_settlement",
+        "postings_sha256": "725569932656b3e1e3b187d2ca0032995e83513752583d1b56e4dfa4a6c73f2e"
+      },
+      {
+        "content_sha256": "058bfd16771e430ba37cec4750b594f10cd73afcc13b4aeffbd60752dfe573a0",
+        "entity_id": "pilot_buyer",
+        "id": 4,
+        "kind": "payable_recognized",
+        "postings_sha256": "d529f2ba73edc91e6659335508f58af6053a0573390ff69f30736353de099f35"
+      },
+      {
+        "content_sha256": "1203ec3a218469015e11ea7bbc0bcb3bca3c405173d5e2e3bad6c2d9acc351df",
+        "entity_id": "pilot_buyer",
+        "id": 5,
+        "kind": "provider_payment_sent",
+        "postings_sha256": "0d411a0d1ccd83a00c8b0112292fded93c0b3a842d1964fd7db6a8fbc13fd758"
+      }
+    ],
+    "obligation": "7abd7ae1b6495845aab183361fab93914d18e7de824517542e1c6658e1757098",
+    "payment_intent": "c122c826e62f7f8bc15e3edf5ff84461916dfba6b9ac28690b62807515cc7005",
+    "payment_session": "4d513026a264221ae216bbb13d899cd4944fb106c14c1e46ba1e44791602a3d3",
+    "provider_settlement": {
+      "capture_id": "82L451107A123522J",
+      "row_sha256": "e507d98a4f834d0d4b0bf4cfd56ab109f706b85cfc58c11330d107c64fc125fe"
+    },
+    "settlement_events": [
+      {
+        "event_id": "paypal_capture:82l451107a123522j",
+        "row_sha256": "c054c2f359343e3aff36fcdd743f460ceb2263ce3afac530cd8c4ca65da26366"
+      }
+    ]
+  },
+  "run_id": "20261112T191319Z",
+  "stored_document_reproduces_digest": true,
+  "verdict": "passed",
+  "verification_view": {
+    "attestations": [
+      {
+        "checker_version": "elide-reconciliation-check/2",
+        "document_sha256": "4bf699c91fc8d9d2454b064c3347781ad4645427e6a701218a3670ea9fb21603",
+        "purpose": "reverification",
+        "verdict": "passed",
+        "verified_at": "2026-11-12T19:13:19.257506+00:00"
+      }
+    ],
+    "legacy_check_sha256_placeholder": true,
+    "note": "check_sha256 on this pre-0008 record is a placeholder, not a digest",
+    "status": "PASSED"
+  }
+}

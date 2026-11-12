@@ -1,0 +1,110 @@
+{
+  "as_of": "2026-11-12T17:19:11.324113+00:00",
+  "intents": [
+    {
+      "intent": {
+        "intent_id": "pin_7452d6099eaf9caf",
+        "status": "approved",
+        "status_reason": "EXECUTION_DISABLED",
+        "obligation_id": "pilot_001",
+        "revision_no": 3,
+        "amount_cents": 2400,
+        "fee_ceiling_cents": 0,
+        "evidence_kind": "merchant_attested",
+        "commitment_id": "pi:pin_7452d6099eaf9caf",
+        "created_at": "2026-11-12T17:13:24.323177+00:00",
+        "plan_id": "plan_17aed8bf036d8d89"
+      },
+      "authorization": {
+        "authorization_id": "pau_8d756a08712328c3",
+        "decision": "approve",
+        "decided_at": "2026-11-12T17:13:07.086481+00:00",
+        "expires_at": "2026-11-13T17:11:29.933133+00:00",
+        "expired": false,
+        "conditions_digest": "f3205317f83b6a6b98af7edba4881a85061b41ec2193acb295f62fabf1bfce5b",
+        "revision_no": 3,
+        "amount_cents": 2400,
+        "fee_ceiling_cents": 0
+      },
+      "conditions_as_plan_view_computes_them": {
+        "obligation_in_network": false,
+        "conditions": "None (invoice excluded: in execution)",
+        "matches_authorization": false,
+        "economic_digest_equals_plan": false
+      },
+      "conditions_as_execution_revalidates_them": {
+        "obligation_in_network": true,
+        "matches_authorization": true,
+        "verifier_issues": [],
+        "conditions": {
+          "schema": "elide.payment-conditions.v1",
+          "obligation_id": "pilot_001",
+          "revision_no": 3,
+          "in_force_revision_no": 3,
+          "revision_sha256": "f329b21eb4d8b2086d468d07229bee0208ad8a6bc817e034ef95fa6de975f2af",
+          "currency": "USD",
+          "due_at": "2026-11-15T13:13:32.717216+00:00",
+          "open_cents": 2400,
+          "payee": "pilot_seller",
+          "payer_participating": true,
+          "payee_participating": true,
+          "fee": {
+            "status": "known",
+            "payer_fee_cents": 0,
+            "payee_fee_cents": 0,
+            "ceiling_cents": 0
+          },
+          "payer_policy": {
+            "version": 1,
+            "digest": "7240562c143dd2b729570591ba2f3dd2464a8f0e71d8c8974ff06149805e9740"
+          },
+          "effective_reserve_cents": 5000,
+          "max_fee_per_leg_cents": null,
+          "payee_prohibited": false,
+          "evidence_kind": "merchant_attested"
+        }
+      },
+      "in_force_revision": {
+        "no": 3,
+        "due_at": "2026-11-15T13:13:32.717216+00:00",
+        "concession_cents": 100,
+        "open_cents": 2400
+      },
+      "policy": {
+        "version": 1,
+        "reserve_floor_cents": 5000
+      },
+      "evidence": {
+        "evidence_id": "att_pilot_buyer_1794503432_d39d9d",
+        "kind": "merchant_attested",
+        "spendable_cents": 20000,
+        "reserve_cents": 5000,
+        "observed_at": "2026-11-12T17:10:32.195730+00:00",
+        "valid_until": "2026-11-15T17:10:32.195730+00:00",
+        "covers_pay_by": true
+      },
+      "commitments": [
+        {
+          "commitment_id": "pi:pin_7452d6099eaf9caf",
+          "kind": "reservation",
+          "amount_cents": 2400,
+          "released_at": null
+        }
+      ],
+      "outbox": [
+        {
+          "id": 1,
+          "kind": "create_payment_session",
+          "intent_id": "pin_7452d6099eaf9caf",
+          "status": "held",
+          "attempts": 0,
+          "available_at": "2026-11-12T17:13:24.323177+00:00"
+        }
+      ],
+      "bindings": {
+        "invoicer_matches_credentials": true,
+        "payer_matches_configured_payer": true
+      }
+    }
+  ]
+}

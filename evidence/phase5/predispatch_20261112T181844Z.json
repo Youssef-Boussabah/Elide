@@ -1,0 +1,147 @@
+{
+  "all_passed": true,
+  "checks": [
+    {
+      "check": "0 isolated pilot database",
+      "observed": "elide_sandbox_pilot",
+      "ok": true
+    },
+    {
+      "check": "1 exactly one pending create job, nothing else dispatchable",
+      "observed": [
+        "1:create_payment_session:pending:attempts=0"
+      ],
+      "ok": true
+    },
+    {
+      "check": "9 the original intent and authorization are reused",
+      "observed": {
+        "authorization": "pau_8d756a08712328c3",
+        "intent": "pin_7452d6099eaf9caf",
+        "reason": "QUEUED_FOR_PROVIDER",
+        "status": "approved"
+      },
+      "ok": true
+    },
+    {
+      "check": "2 the approval is unexpired and is an approval",
+      "observed": {
+        "expires_at": "2026-11-13T17:11:29.933133+00:00",
+        "hours_left": 22.88
+      },
+      "ok": true
+    },
+    {
+      "check": "2,3,4,6 worker revalidate(): authority, conditions digest, independent verifier, exact reservation, bindings vs credentials, Sandbox",
+      "observed": "PASS",
+      "ok": true
+    },
+    {
+      "check": "4 the original USD 24.00 reservation is the only commitment",
+      "observed": [
+        "pi:pin_7452d6099eaf9caf:reservation:2400:active=True"
+      ],
+      "ok": true
+    },
+    {
+      "check": "5 merchant-attested evidence valid through the payment deadline",
+      "observed": {
+        "deadline": "2026-11-15T13:13:32.717216+00:00",
+        "reserve_cents": 5000,
+        "spendable_cents": 20000,
+        "valid_until": "2026-11-15T17:10:32.195730+00:00"
+      },
+      "ok": true
+    },
+    {
+      "check": "terms: revision 3, USD 1.00 concession, USD 24.00",
+      "observed": {
+        "amount": 2400,
+        "concession": 100,
+        "revision": 3
+      },
+      "ok": true
+    },
+    {
+      "check": "10 nothing duplicated: one intent, no session/request/operation yet",
+      "observed": {
+        "payment_exception": 0,
+        "payment_intent": 1,
+        "payment_session": 0,
+        "provider_operation": 0,
+        "provider_request": 0,
+        "provider_settlement": 0
+      },
+      "ok": true
+    },
+    {
+      "check": "6 bindings: payee account and payer identities as approved",
+      "observed": {
+        "payee_account": "redacted:6dbc83888cc3",
+        "payee_credential": "redacted:2b2f310e3f08",
+        "payer": "redacted:94281907e2c4"
+      },
+      "ok": true
+    },
+    {
+      "check": "9 one RELEASED_BY_PAYER state event and one audit event",
+      "observed": {
+        "audit_payment_released": 1,
+        "events": [
+          "RELEASED_BY_PAYER by user:usr_0a791cecf8e5f0ff at 2026-11-12T18:13:11.713037+00:00"
+        ]
+      },
+      "ok": true
+    },
+    {
+      "check": "8 AUTO_CANCEL_UNPAID is false",
+      "observed": false,
+      "ok": true
+    },
+    {
+      "check": "6 credential fingerprint",
+      "observed": "redacted:2b2f310e3f08",
+      "ok": true
+    },
+    {
+      "check": "6 payer fingerprint",
+      "observed": "redacted:94281907e2c4",
+      "ok": true
+    },
+    {
+      "check": "7 PayPal: no ELIDE-* invoice and no unpaid invoice exists",
+      "observed": {
+        "invoices": [
+          {
+            "id": "INV2-4RUV-XPEH-4F3C-T8BW",
+            "number": "0001",
+            "status": "PAID"
+          }
+        ],
+        "list_debug_id": "f600236e07ec1",
+        "list_http": 200,
+        "oauth_http": 200,
+        "total_items": 1
+      },
+      "ok": true
+    },
+    {
+      "check": "7 PayPal: search for this intent's number ELIDE-4E480F60A4F8 finds nothing",
+      "observed": {
+        "matches": 0,
+        "search_debug_id": "f600236355e62",
+        "search_http": 200
+      },
+      "ok": true
+    }
+  ],
+  "environment": "sandbox",
+  "intent": "pin_7452d6099eaf9caf",
+  "mutations": "none",
+  "provider_calls": [
+    "POST /v1/oauth2/token",
+    "GET /v2/invoicing/invoices",
+    "POST /v2/invoicing/search-invoices (read-only)"
+  ],
+  "run_id": "20261112T181844Z"
+}

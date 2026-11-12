@@ -2,9 +2,12 @@
 
 A webhook body is never financial truth. An accepted event is recorded once in the P1
 `provider_event_inbox` (provider event id + environment; a redelivery with a different
-payload is a conflict) and enqueues a HELD `provider_fetch` outbox message: P5 fetches
-the provider resource with a GET before any state changes. Without a configured
-signature verifier the endpoint refuses everything (503) and records nothing.
+payload is a conflict) and enqueues a `provider_fetch` outbox message naming only the
+resource identity (invoice id / capture id). The P5 worker fetches that resource with a
+GET before any state changes (ADR-0012 §7.1). The message is `pending` only when a payment
+provider is configured to fetch from; otherwise it stays `held`. Without a configured
+signature verifier the endpoint refuses everything (503) and records nothing; if PayPal's
+verification service cannot be reached it answers 503 so PayPal retries.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ REQUIRED_HEADERS = (
 MAX_BODY = 64 * 1024
 _EVENT_ID = re.compile(r"^WH-[A-Za-z0-9-]{4,100}$")
 _EVENT_TYPE = re.compile(r"^[A-Z][A-Z0-9_.]{2,100}$")
+_RESOURCE_ID = re.compile(r"^[A-Za-z0-9-]{4,80}$")
 
 
 class WebhookVerifier(Protocol):
@@ -61,6 +65,25 @@ class WebhookOutcome:
     body: dict
 
 
+def resource_identity(event: dict) -> dict[str, str]:
+    """The provider resource an event refers to, from its identifiers only."""
+    r = event.get("resource") or {}
+    et = event.get("event_type", "")
+    out: dict[str, str] = {}
+    inv = (r.get("invoice") or {}).get("id") if isinstance(r.get("invoice"), dict) else None
+    if et.startswith("INVOICING.") and not inv and isinstance(r.get("id"), str):
+        inv = r["id"]
+    if et.startswith("PAYMENT.CAPTURE.") and isinstance(r.get("id"), str):
+        out["capture_id"] = r["id"][:80]
+        if isinstance(r.get("invoice_id"), str):
+            inv = r["invoice_id"]
+    if isinstance(inv, str) and _RESOURCE_ID.match(inv):
+        out["invoice_id"] = inv
+    if "capture_id" in out and not _RESOURCE_ID.match(out["capture_id"]):
+        del out["capture_id"]
+    return out
+
+
 def receive(
     engine: Engine,
     verifier: WebhookVerifier,
@@ -69,6 +92,7 @@ def receive(
     *,
     environment: str,
     now: datetime,
+    fetch_dispatch: bool = False,
 ) -> WebhookOutcome:
     if len(body) > MAX_BODY:
         return WebhookOutcome(413, {"code": "TOO_LARGE"})
@@ -99,7 +123,11 @@ def receive(
         return WebhookOutcome(422, {"code": "MALFORMED"})
     if not verifier.configured:
         return WebhookOutcome(503, {"code": "VERIFIER_NOT_CONFIGURED"})
-    if not verifier.verify(h, body):
+    try:
+        verified = verifier.verify(h, body)
+    except Exception:  # the verification service could not be asked: PayPal retries
+        return WebhookOutcome(503, {"code": "VERIFIER_UNAVAILABLE"})
+    if not verified:
         audit.append_separately(
             engine,
             at=now,
@@ -132,7 +160,12 @@ def receive(
         return WebhookOutcome(409, {"code": "PAYLOAD_CHANGED"})
     if res.status is InboxStatus.DUPLICATE:
         return WebhookOutcome(200, {"status": "duplicate", "inbox_id": res.inbox_id})
-    payload = {"provider_event_id": event["id"], "resource_type": event["event_type"]}
+    payload = {
+        "provider_event_id": event["id"],
+        "event_type": event["event_type"],
+        "resource_type": event["event_type"],
+        **resource_identity(event),
+    }
     with engine.begin() as conn:
         conn.execute(
             pg_insert(outbox_message)
@@ -141,7 +174,7 @@ def receive(
                 kind="provider_fetch",
                 payload=payload,
                 payload_sha256=payload_digest(payload),
-                status="held",
+                status="pending" if fetch_dispatch else "held",
                 available_at=now,
                 created_at=now,
             )

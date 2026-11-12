@@ -111,7 +111,11 @@ class SpendGuard:
                 try:
                     fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                     break
-                except FileExistsError:
+                except (FileExistsError, PermissionError):
+                    # Windows reports a lock file that another process is deleting
+                    # ("delete pending") as PermissionError, not FileExistsError: it is held
+                    # too, so wait; a real permission problem still fails closed at the
+                    # deadline.
                     if time.monotonic() > deadline:
                         raise SpendLockError(
                             f"spend ledger lock {self.lock_path.name} is held; no call made "

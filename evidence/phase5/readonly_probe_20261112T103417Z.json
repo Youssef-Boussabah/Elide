@@ -1,0 +1,56 @@
+{
+  "checks": {
+    "capture_payee_fingerprint": "redacted:6dbc83888cc3",
+    "credential_fingerprint": "redacted:2b2f310e3f08",
+    "invoice_status": "PAID",
+    "paid_strict_problems": [],
+    "payee_fingerprint_matches_p0_record": true,
+    "recipient_view_url_is_sandbox_host": true,
+    "search_contains_p0_invoice": true,
+    "search_matches": 1,
+    "settlement": {
+      "credit_cents": 130679,
+      "credit_currency": "CAD",
+      "exchange_rate": "1.35984225",
+      "fee_cents": 2901,
+      "gross_cents": 99000,
+      "gross_currency": "USD",
+      "identity": "face - discount = gross; gross - fee = net; rate x net = credit: OK",
+      "net_cents": 96099
+    }
+  },
+  "commit": "cd4063837b699df60428deb71f6b8ae3e341ec81+dirty",
+  "environment": "sandbox",
+  "mutations": "none",
+  "run_id": "20261112T103417Z",
+  "steps": [
+    {
+      "debug_id": "ca594e226bff4",
+      "http_status": 200,
+      "method": "POST",
+      "path_template": "oauth_token",
+      "step": "oauth_token"
+    },
+    {
+      "debug_id": "ca594e229fb2b",
+      "http_status": 200,
+      "method": "GET",
+      "path_template": "GET /v2/invoicing/invoices/{id}",
+      "step": "GET /v2/invoicing/invoices/{id}"
+    },
+    {
+      "debug_id": "ca594e22cfda3",
+      "http_status": 200,
+      "method": "POST",
+      "path_template": "POST /v2/invoicing/search-invoices",
+      "step": "POST /v2/invoicing/search-invoices"
+    },
+    {
+      "debug_id": "ca594e22e5f10",
+      "http_status": 200,
+      "method": "GET",
+      "path_template": "GET /v2/payments/captures/{id}",
+      "step": "GET /v2/payments/captures/{id}"
+    }
+  ]
+}

@@ -106,3 +106,35 @@ def test_http_error_releases_and_unknown_outcome_commits_the_estimate(tmp_path):
     with pytest.raises(LLMUnavailableError):
         b.generate_structured(system="s", user="u", schema=Out, max_tokens=100)
     assert g.total() > 0 and g.outstanding() == 0  # kept at the full estimate
+
+
+def test_a_lock_file_being_deleted_is_waited_for_not_an_error(tmp_path, monkeypatch):
+    """Windows: creating the lock while another process deletes it raises PermissionError
+    (delete pending). Seen intermittently in the multi-process test on 2026-11-12."""
+    import api.ai.spend as spend
+
+    real_open = spend.os.open
+    calls = {"n": 0}
+
+    def flaky_open(path, flags, *args):
+        if str(path).endswith(".lock") and calls["n"] < 2:
+            calls["n"] += 1
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(spend.os, "open", flaky_open)
+    g = SpendGuard(Decimal("1"), tmp_path / "l.json", lock_timeout=2)
+    g.reserve(Decimal("0.001"))
+    assert calls["n"] == 2 and g.outstanding() == Decimal("0.001")
+
+
+def test_a_persistent_permission_error_still_fails_closed(tmp_path, monkeypatch):
+    import api.ai.spend as spend
+
+    def denied(path, flags, *args):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(spend.os, "open", denied)
+    g = SpendGuard(Decimal("1"), tmp_path / "l.json", lock_timeout=0.05)
+    with pytest.raises(SpendLockError):
+        g.reserve(Decimal("0.001"))

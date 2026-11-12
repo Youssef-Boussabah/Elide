@@ -151,3 +151,186 @@ def workspace(fresh_db):
     app.state.engine = engine
     app.state.clock = lambda: clock[0]
     yield Workspace(app, engine, clock, seeded)
+
+
+# --- P5 Sandbox-pilot harness (mock provider; no PayPal call) ------------------------------
+PILOT_PAYER_EMAIL = "pilot-payer@sandbox.example.test"
+PILOT_PAYEE_MERCHANT_ID = "MOCKSANDBOXPAYEE1"
+
+
+class Pilot(Workspace):
+    """A non-synthetic two-merchant network driven over HTTP, plus the P5 worker against
+    the in-memory PayPal double. `work()` runs the outbox like the real worker would."""
+
+    def __init__(self, app, engine, clock, seeded, mock, flags):
+        super().__init__(app, engine, clock, seeded)
+        self.mock, self.flags = mock, flags
+        self.buyer_login, self.seller_login = "pilot-buyer@elide.test", "pilot-seller@elide.test"
+
+    def runtime(self, worker_id: str = "w1", **kw):
+        from api.execution.service import Runtime
+
+        return Runtime(
+            engine=self.engine,
+            provider=kw.pop("provider", self.mock),
+            payer_email=lambda: PILOT_PAYER_EMAIL,
+            execution_enabled=lambda: self.flags["execution"],
+            clock=lambda: self.clock[0],
+            worker_id=worker_id,
+            **kw,
+        )
+
+    def bind(self, *, payee=True, payer=True, invoicer_client_id=None):
+        from api.execution import bindings
+        from api.integrations.paypal.redaction import fingerprint
+
+        with self.engine.begin() as conn:
+            if payee:
+                bindings.bind(
+                    conn,
+                    merchant_id="pilot_seller",
+                    role="invoicer",
+                    credential_fingerprint=fingerprint(invoicer_client_id or self.mock.client_id),
+                    account_fingerprint=fingerprint(PILOT_PAYEE_MERCHANT_ID),
+                    consent_note="TEST: owner consents to collect agreed obligations via PayPal",
+                    bound_by="test",
+                    at=self.now,
+                    settlement_currency="USD",
+                )
+            if payer:
+                bindings.bind(
+                    conn,
+                    merchant_id="pilot_buyer",
+                    role="payer",
+                    credential_fingerprint=fingerprint(PILOT_PAYER_EMAIL),
+                    account_fingerprint=fingerprint(PILOT_PAYER_EMAIL),
+                    consent_note="TEST: Sandbox personal payer account",
+                    bound_by="test",
+                    at=self.now,
+                )
+
+    def work(self, rounds: int = 20, step_s: float = 61.0, worker_id: str = "w1", **kw):
+        """Run the worker until idle, advancing the clock past retry/poll delays."""
+        from datetime import timedelta
+
+        from api.execution.runtime import worker_kinds
+        from api.execution.service import handlers_for, on_dead
+        from api.workers.outbox import RetryPolicy, run_once
+
+        rt = self.runtime(worker_id, **kw)
+        seen = []
+        idle = 0
+        for _ in range(rounds):
+            done = run_once(
+                self.engine,
+                handlers_for(rt),
+                worker_id=worker_id,
+                clock=lambda: self.clock[0],
+                policy=RetryPolicy(base_s=30, cap_s=120),
+                on_dead=lambda j, e: on_dead(rt, j, e),
+                kinds=worker_kinds(self.flags["execution"]),
+            )
+            seen += done
+            if done:
+                idle = 0
+                continue
+            idle += 1
+            if idle > 3:
+                break
+            self.clock[0] = self.clock[0] + timedelta(seconds=step_s)
+        return seen
+
+    def agree_and_approve(self, key: str = "a"):
+        """Buyer accepts the seller's offer, plans, approves its own leg, creates an intent."""
+        buyer = self.actor(self.buyer_login)
+        offers = buyer.get("/v1/m/pilot_buyer/offers").json()["offers"]
+        o = next(x for x in offers if x["status"] == "proposed")
+        r = buyer.post(
+            f"/v1/m/pilot_buyer/offers/{o['offer_id']}/decision",
+            {"decision": "accept", "terms_digest": o["terms_digest"]},
+            key=f"accept-offer-{key}",
+        )
+        assert r.status_code == 200, r.text
+        plan = buyer.post("/v1/m/pilot_buyer/plans", {}, key=f"create-plan-{key}")
+        assert plan.status_code == 200, plan.text
+        leg = next(x for x in plan.json()["plan"]["my_legs"] if x["obligation_id"] == "pilot_001")
+        auth = buyer.post(
+            f"/v1/m/pilot_buyer/plans/{plan.json()['plan']['plan_id']}/authorizations",
+            {
+                "leg_id": leg["leg_id"],
+                "decision": "approve",
+                "binding_digest": leg["authorize"]["binding_digest"],
+            },
+            key=f"authorize-leg-{key}",
+        )
+        assert auth.status_code == 200, auth.text
+        pi = buyer.post(
+            "/v1/m/pilot_buyer/payment-intents",
+            {"authorization_id": auth.json()["authorization_id"]},
+            key=f"payment-intent-{key}",
+        )
+        assert pi.status_code == 200, pi.text
+        return buyer, pi.json()
+
+    def intent(self, intent_id: str) -> dict:
+        from sqlalchemy import select
+
+        from api.workflow.tables import payment_intent
+
+        with self.engine.connect() as c:
+            return dict(
+                c.execute(select(payment_intent).where(payment_intent.c.intent_id == intent_id))
+                .mappings()
+                .one()
+            )
+
+    def invoice_id(self, intent_id: str) -> str | None:
+        from sqlalchemy import select
+
+        from api.execution.tables import payment_session
+
+        with self.engine.connect() as c:
+            return c.execute(
+                select(payment_session.c.provider_invoice_id).where(
+                    payment_session.c.intent_id == intent_id
+                )
+            ).scalar_one_or_none()
+
+
+def _pilot(fresh_db, obligations: int):
+    from datetime import UTC, datetime
+
+    from api.app.main import create_app
+    from api.integrations.paypal.mock import MockPayPal
+    from fixtures.sandbox_pilot import USERS, seed_pilot
+
+    engine, _url = fresh_db
+    clock = [datetime(2026, 11, 11, 18, 0, tzinfo=UTC)]
+    passwords = {login: f"test-only-{i}-{uuid.uuid4().hex[:12]}" for i, login in enumerate(USERS)}
+    seeded = seed_pilot(
+        engine,
+        now=clock[0],
+        passwords=passwords,
+        attest_buyer=(20000, 5000),
+        obligations=obligations,
+    )
+    flags = {"execution": True}
+    mock = MockPayPal(clock=lambda: clock[0], payee_merchant_id=PILOT_PAYEE_MERCHANT_ID)
+    app = create_app()
+    app.state.engine = engine
+    app.state.clock = lambda: clock[0]
+    app.state.payments_execution_enabled = True
+    app.state.payment_provider = mock
+    app.state.payer_email = lambda: PILOT_PAYER_EMAIL
+    return Pilot(app, engine, clock, seeded, mock, flags)
+
+
+@pytest.fixture
+def pilot(fresh_db):
+    yield _pilot(fresh_db, 1)
+
+
+@pytest.fixture
+def pilot_two(fresh_db):
+    """The pilot network with two independent obligations (pilot_001, pilot_002)."""
+    yield _pilot(fresh_db, 2)

@@ -1,0 +1,97 @@
+{
+  "commitments": [
+    {
+      "amount_cents": 2400,
+      "commitment_id": "pi:pin_7452d6099eaf9caf",
+      "kind": "reservation",
+      "release_reason": null,
+      "released_at": null
+    }
+  ],
+  "environment": "sandbox",
+  "exceptions": [],
+  "intent": {
+    "intent_id": "pin_7452d6099eaf9caf",
+    "status": "payer_action_pending",
+    "status_reason": "INVOICE_SENT"
+  },
+  "journal": [],
+  "obligation_position": {
+    "authorized_concession": 100,
+    "cash_applied": 0,
+    "original_open": 2500,
+    "remaining_open": 2400,
+    "status": "open"
+  },
+  "outbox": [
+    {
+      "attempts": 0,
+      "id": 2,
+      "kind": "reconcile_payment",
+      "last_error": null,
+      "status": "pending"
+    },
+    {
+      "attempts": 1,
+      "id": 1,
+      "kind": "create_payment_session",
+      "last_error": null,
+      "status": "done"
+    }
+  ],
+  "provider": {
+    "capture": {
+      "amount": "USD 24.00",
+      "create_time": "2026-11-12T18:24:35Z",
+      "debug_id": "f483272ff672b",
+      "exchange_direction": "USD->CAD",
+      "exchange_rate": "1.37241975",
+      "final_capture": true,
+      "gross": "USD 24.00",
+      "http_status": 200,
+      "id": "82L451107A123522J",
+      "invoice_id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+      "net": "USD 23.00",
+      "payee_fingerprint": "redacted:6dbc83888cc3",
+      "payee_matches_binding": true,
+      "paypal_fee": "USD 1.00",
+      "receivable": "CAD 31.57",
+      "seller_protection": "ELIGIBLE",
+      "status": "COMPLETED"
+    },
+    "invoice": {
+      "currency": "USD",
+      "debug_id": "f4832725ed444",
+      "discount_cents": 100,
+      "due_cents": 0,
+      "http_status": 200,
+      "id": "INV2-HQXZ-SCNE-RKTV-VMMT",
+      "item_total_cents": 2500,
+      "number": "ELIDE-4E480F60A4F8",
+      "paid_cents": 2400,
+      "status": "PAID",
+      "strict_paid_problems": [],
+      "total_cents": 2400,
+      "transaction_ids": [
+        "82L451107A123522J"
+      ],
+      "transaction_payment_date_time": "2026-11-12T10:24:36Z",
+      "transaction_statuses": [
+        "SUCCESS"
+      ],
+      "transaction_type": "PAYPAL",
+      "transactions": 1
+    },
+    "note": "payer identity: PayPal's invoice and capture do not identify the paying account; the invoice recipient is the approved Sandbox payer (redacted:94281907e2c4)"
+  },
+  "run_id": "20261112T182546Z",
+  "settlement_events": [],
+  "settlement_records": [],
+  "stage": "before-booking",
+  "state_transitions": [
+    "approved -> approved (RELEASED_BY_PAYER) at 2026-11-12T18:13:11.713037+00:00",
+    "approved -> session_pending (DISPATCHED) at 2026-11-12T18:18:56.239980+00:00",
+    "session_pending -> payer_action_pending (INVOICE_SENT) at 2026-11-12T18:18:59.026078+00:00"
+  ],
+  "trial_balance": {}
+}

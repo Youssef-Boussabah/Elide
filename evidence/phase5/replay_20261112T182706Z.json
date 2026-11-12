@@ -1,0 +1,64 @@
+{
+  "after": {
+    "capacity_commitment": 2,
+    "journal_entry": 5,
+    "journal_posting": 17,
+    "obligation_settlement_event": 1,
+    "payment_exception": 0,
+    "provider_settlement": 1,
+    "trial_balance": {
+      "CAD": 0,
+      "USD": 0
+    }
+  },
+  "before": {
+    "capacity_commitment": 2,
+    "journal_entry": 5,
+    "journal_posting": 17,
+    "obligation_settlement_event": 1,
+    "payment_exception": 0,
+    "provider_settlement": 1,
+    "trial_balance": {
+      "CAD": 0,
+      "USD": 0
+    }
+  },
+  "capture_id": "82L451107A123522J",
+  "environment": "sandbox",
+  "exactly_once": true,
+  "independent_checker": [],
+  "intent": "pin_7452d6099eaf9caf",
+  "replay_1_jobs": [
+    {
+      "action": "done",
+      "error": null,
+      "kind": "provider_fetch"
+    },
+    {
+      "action": "done",
+      "error": null,
+      "kind": "provider_fetch"
+    },
+    {
+      "action": "done",
+      "error": null,
+      "kind": "reconcile_payment"
+    }
+  ],
+  "replay_1_kinds_claimable": [
+    "reconcile_payment",
+    "provider_fetch"
+  ],
+  "replay_2_direct_booking": {
+    "action": "done",
+    "error": null
+  },
+  "replay_3_journal_bundle": [
+    "paypal:sandbox:invoice:inv2-hqxz-scne-rktv-vmmt:issued: duplicate",
+    "paypal:sandbox:invoice:inv2-hqxz-scne-rktv-vmmt:concession: duplicate",
+    "paypal:sandbox:capture:82l451107a123522j:settlement: duplicate",
+    "elide:obligation:pilot_001:payable_recognized: duplicate",
+    "paypal:sandbox:capture:82l451107a123522j:payment_sent: duplicate"
+  ],
+  "run_id": "20261112T182706Z"
+}

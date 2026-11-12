@@ -53,7 +53,21 @@ def save_evidence(engine: Engine, ev: CapacityEvidence) -> None:
     """Insert immutable evidence. Re-saving identical evidence is a no-op; the same id with
     other content, or another observation of the same balance at the same instant, raises
     `EvidenceConflictError`."""
-    values = {
+    values = _evidence_values(ev)
+    try:
+        with engine.begin() as conn:
+            _save_evidence(conn, ev, values)
+    except IntegrityError as exc:
+        if "uq_capacity_evidence_observation" in str(exc.orig):
+            raise EvidenceConflictError(
+                f"{ev.merchant_id} already has a {ev.currency} observation at "
+                f"{ev.observed_at.isoformat()}"
+            ) from exc
+        raise
+
+
+def _evidence_values(ev: CapacityEvidence) -> dict:
+    return {
         "evidence_id": ev.evidence_id,
         "merchant_id": ev.merchant_id,
         "currency": ev.currency,
@@ -69,19 +83,32 @@ def save_evidence(engine: Engine, ev: CapacityEvidence) -> None:
         "provenance_recorded_at": ev.provenance.recorded_at,
         "provenance_evidence_ref": ev.provenance.evidence_ref,
         "included_receipt_ids": sorted(ev.included_receipt_ids),
+        "included_outflow_ids": sorted(ev.included_outflow_ids),
     }
+
+
+def _save_evidence(conn: Connection, ev: CapacityEvidence, values: dict) -> list[str]:
+    inserted = conn.execute(
+        insert(capacity_evidence)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["evidence_id"])
+        .returning(capacity_evidence.c.evidence_id)
+    ).first()
+    if inserted is None:
+        if _load_evidence(conn, ev.evidence_id) != ev:
+            raise EvidenceConflictError(
+                f"evidence {ev.evidence_id} already exists with other values"
+            )
+        return []
+    # P5: a newer observation that lists settled outflows releases exactly those.
+    return release_reflected_outflows_in(conn, ev)
+
+
+def save_evidence_in(conn: Connection, ev: CapacityEvidence) -> list[str]:
+    """`save_evidence` in the caller's transaction; returns the outflows it released."""
     try:
-        with engine.begin() as conn:
-            inserted = conn.execute(
-                insert(capacity_evidence)
-                .values(**values)
-                .on_conflict_do_nothing(index_elements=["evidence_id"])
-                .returning(capacity_evidence.c.evidence_id)
-            ).first()
-            if inserted is None and _load_evidence(conn, ev.evidence_id) != ev:
-                raise EvidenceConflictError(
-                    f"evidence {ev.evidence_id} already exists with other values"
-                )
+        with conn.begin_nested():
+            return _save_evidence(conn, ev, _evidence_values(ev))
     except IntegrityError as exc:
         if "uq_capacity_evidence_observation" in str(exc.orig):
             raise EvidenceConflictError(
@@ -147,6 +174,7 @@ def _load_evidence(conn: Connection, evidence_id: str) -> CapacityEvidence:
             r.provenance_evidence_ref,
         ),
         included_receipt_ids=frozenset(r.included_receipt_ids),
+        included_outflow_ids=frozenset(r.included_outflow_ids),
     )
 
 
@@ -242,18 +270,107 @@ def reserve_capacity_in(
     return commitment
 
 
-def release_capacity(engine: Engine, commitment_id: str, at: datetime) -> bool:
+def release_capacity(
+    engine: Engine, commitment_id: str, at: datetime, reason: str = "released"
+) -> bool:
     """Release an active commitment once. Returns False if it was already released."""
     with engine.begin() as conn:
-        res = conn.execute(
-            capacity_commitment.update()
-            .where(
-                capacity_commitment.c.commitment_id == commitment_id,
-                capacity_commitment.c.released_at.is_(None),
-            )
-            .values(released_at=at)
+        return release_commitment_in(conn, commitment_id, at, reason)
+
+
+def release_commitment_in(conn: Connection, commitment_id: str, at: datetime, reason: str) -> bool:
+    """Release once, with the reason, in the caller's transaction (P5 lifecycle)."""
+    res = conn.execute(
+        capacity_commitment.update()
+        .where(
+            capacity_commitment.c.commitment_id == commitment_id,
+            capacity_commitment.c.released_at.is_(None),
         )
-        return res.rowcount == 1
+        .values(released_at=at, release_reason=reason[:120])
+    )
+    return res.rowcount == 1
+
+
+def settle_commitment_in(
+    conn: Connection,
+    *,
+    reservation_id: str,
+    settled_id: str,
+    outflow_cents: int,
+    at: datetime,
+    reason: str,
+) -> None:
+    """A reserved payment was confirmed by the provider (ADR-0012 §4.5).
+
+    In one transaction: the reservation (amount + fee ceiling) is released and a
+    `settled_outflow` commitment of the actual outflow is inserted. The cash has left the
+    account, but the newest balance evidence predates the payment, so the outflow stays
+    committed until an observation that lists it in `included_outflow_ids` arrives
+    (`release_reflected_outflows_in`). It is recorded even if it creates a deficit: it is a
+    fact, not a request.
+    """
+    _lock_merchant_of(conn, reservation_id)
+    r = conn.execute(
+        select(capacity_commitment).where(capacity_commitment.c.commitment_id == reservation_id)
+    ).first()
+    if r is None or r.kind != "reservation":
+        raise CapacityError(f"no reservation {reservation_id}")
+    if outflow_cents <= 0:
+        raise CapacityError("a settled outflow must be positive")
+    if r.released_at is None:
+        release_commitment_in(conn, reservation_id, at, reason)
+    conn.execute(
+        insert(capacity_commitment)
+        .values(
+            commitment_id=settled_id,
+            merchant_id=r.merchant_id,
+            evidence_id=r.evidence_id,
+            plan_id=r.plan_id,
+            currency=r.currency,
+            amount_cents=outflow_cents,
+            created_at=at,
+            kind="settled_outflow",
+        )
+        .on_conflict_do_nothing(index_elements=["commitment_id"])
+    )
+
+
+def release_reflected_outflows_in(conn: Connection, ev: CapacityEvidence) -> list[str]:
+    """Release settled outflows that `ev` explicitly reflects (and only those).
+
+    An outflow is released only if the observation lists it and was made at or after the
+    payment was recorded: a balance cannot reflect a payment that had not happened. A
+    snapshot that merely changed releases nothing."""
+    if not ev.included_outflow_ids:
+        return []
+    _lock_merchant(conn, ev.merchant_id)
+    c = capacity_commitment.c
+    rows = conn.execute(
+        select(c.commitment_id).where(
+            c.merchant_id == ev.merchant_id,
+            c.kind == "settled_outflow",
+            c.released_at.is_(None),
+            c.commitment_id.in_(sorted(ev.included_outflow_ids)),
+            c.created_at <= ev.observed_at,
+        )
+    ).scalars()
+    released = []
+    for cid in list(rows):
+        if release_commitment_in(
+            conn, cid, ev.observed_at, f"reflected_in_evidence:{ev.evidence_id}"
+        ):
+            released.append(cid)
+    return released
+
+
+def _lock_merchant_of(conn: Connection, commitment_id: str) -> None:
+    m = conn.execute(
+        select(capacity_commitment.c.merchant_id).where(
+            capacity_commitment.c.commitment_id == commitment_id
+        )
+    ).scalar_one_or_none()
+    if m is not None:
+        _lock_merchant(conn, m)
 
 
 def capacity_now(

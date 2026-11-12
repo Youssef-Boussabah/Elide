@@ -60,6 +60,15 @@ class EntryKind(StrEnum):
     PROVIDER_SETTLEMENT = "provider_settlement"
     SYNTHETIC_TRANSFER = "synthetic_transfer"
     REVERSAL = "reversal"
+    # P5 payer books (ADR-0012 §7.3, §17.2): the payable the payer recognized, the
+    # provider-confirmed discharge of it (paying account not identified by PayPal), and the
+    # payer's own attestation of the payment source.
+    PAYABLE_RECOGNIZED = "payable_recognized"
+    OBLIGATION_DISCHARGED = "obligation_discharged"
+    PAYMENT_SOURCE_ATTESTED = "payment_source_attested"
+    # Pre-0008 pilot entries only: credited paypal_payments_sent as provider-verified.
+    # Never written any more; carries an evidence_correction (ADR-0012 §17.2).
+    PROVIDER_PAYMENT_SENT = "provider_payment_sent"
 
 
 @dataclass(frozen=True, slots=True)
