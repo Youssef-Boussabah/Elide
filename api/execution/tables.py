@@ -28,6 +28,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -135,6 +136,25 @@ payment_session = Table(
     CheckConstraint("invoice_number LIKE 'ELIDE-%'", name="ck_payment_session_number"),
 )
 
+# One stable PayPal-Request-Id per logical provider-mutating operation of an intent
+# (migration 0007, gate review finding 2). Every attempt of that operation reuses it; the
+# request digest must match, so a changed payload can never reuse an old identity.
+provider_request = Table(
+    "provider_request",
+    metadata,
+    Column("id", BigInteger, Identity(), primary_key=True),
+    Column("intent_id", String(40), ForeignKey(INTENT_FK), nullable=False),
+    Column("operation", String(30), nullable=False),
+    Column("request_id", String(80), nullable=False, unique=True),
+    Column("request_sha256", String(64), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("intent_id", "operation", name="uq_provider_request_logical"),
+    CheckConstraint(
+        "operation IN ('create_invoice', 'send_invoice', 'cancel_invoice')",
+        name="ck_provider_request_operation",
+    ),
+)
+
 provider_operation = Table(
     "provider_operation",
     metadata,
@@ -153,6 +173,13 @@ provider_operation = Table(
     Column("worker", String(80), nullable=False),
     Column("started_at", DateTime(timezone=True), nullable=False),
     Column("finished_at", DateTime(timezone=True)),
+    # 0007: the logical request this attempt belongs to (mutating calls only) and its number.
+    Column("request_id", String(80), ForeignKey("provider_request.request_id")),
+    Column("attempt_no", Integer),
+    CheckConstraint(
+        "NOT mutating OR (request_id IS NOT NULL AND attempt_no >= 1)",
+        name="ck_provider_operation_request",
+    ),
     CheckConstraint(
         "operation IN ('create_invoice', 'send_invoice', 'cancel_invoice', 'get_invoice', "
         "'search_invoices', 'get_capture', 'get_refund')",
@@ -281,4 +308,9 @@ Index(
     postgresql_where=text("resolved_at IS NULL"),
 )
 
-APPEND_ONLY = ("payment_state_event", "obligation_settlement_event", "provider_settlement")
+APPEND_ONLY = (
+    "payment_state_event",
+    "obligation_settlement_event",
+    "provider_settlement",
+    "provider_request",
+)

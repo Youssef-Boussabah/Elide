@@ -51,6 +51,7 @@ const STATE_TONES: Record<string, Tone> = {
   EXPIRED: "bad",
   CANCELLED: "neutral",
   NEEDS_OPERATOR_REVIEW: "bad",
+  PROVIDER_CONFIRMED_NOT_SPENDABLE: "warn",
   NOT_USABLE_UNTIL_VERIFIED: "warn",
 };
 

@@ -28,7 +28,7 @@ operation and reconciles the provider outcome into the P1 journal, without weake
 | The payer acts in PayPal's hosted page; Elide cannot pay, capture or approve for the payer | Invoicing v2 has no "pay" operation; P0 payment was an owner browser action | Sandbox-verified |
 | `GET /v2/invoicing/invoices/{id}` returns `detail.metadata.recipient_view_url` | P0 runs (fingerprinted) | Sandbox-verified |
 | Endpoints: create, send, cancel (`POST .../cancel`, 204), show, `POST /v2/invoicing/search-invoices` (filter `invoice_number`) | Invoicing v2 schema | Provider documentation |
-| `PayPal-Request-Id` is defined in the schema's components but **not attached** to create or send; invoice-number uniqueness is **not documented** | Invoicing v2 schema | Provider documentation (absence) |
+| *Corrected 2026-11-12 (§16):* PayPal's Invoicing guide documents `PayPal-Request-Id` for retries ("returns the original result" without a duplicate invoice) and that invoice numbers "must be unique"; the endpoint schema does not attach the header to create/send/cancel. The original entry said both were undocumented, which was wrong | Invoicing Core concepts and REST request guide (2026-10-02); Invoicing v2 schema (modified 2026-11-09) | Provider documentation (discrepancy) |
 | Invoice status enum: DRAFT, SENT, SCHEDULED, PAID, MARKED_AS_PAID, CANCELLED, REFUNDED, PARTIALLY_PAID, PARTIALLY_REFUNDED, MARKED_AS_REFUNDED, UNPAID, PAYMENT_PENDING, AUTO_CANCELLED, PAID_EXTERNAL, REFUNDED_EXTERNAL, SHARED | Invoicing v2 schema | Provider documentation |
 | `configuration.partial_payment.allow_partial_payment`, `configuration.allow_tip` exist | Invoicing v2 schema | Provider documentation |
 | `INVOICING.INVOICE.PAID` fires for **full, partial or pending** payments | webhook event-name list | Provider documentation |
@@ -195,11 +195,12 @@ after a draft exists → the draft is left unsent (a draft is not payable), `can
 failure after send → a `cancel_payment_session` message; the intent stays reserved until the
 provider cancellation is confirmed by GET.
 
-## 6. Idempotency without undocumented guarantees
+## 6. Idempotency without relying on provider guarantees (corrected in §16)
 
 - Each session has a deterministic `invoice_number` = `ELIDE-` + 12 hex of
-  SHA-256(intent id) and `detail.reference` = the session id. `PayPal-Request-Id` is still sent
-  (harmless), but correctness does not depend on it.
+  SHA-256(intent id) and `detail.reference` = the session id. Each logical create/send/cancel
+  has one persisted `PayPal-Request-Id`, reused on every attempt (§16); correctness does not
+  depend on PayPal honouring it.
 - **Unknown create:** search by `invoice_number`. Exactly one match whose terms equal the
   session is adopted; more than one → `exception`. No match → search again with backoff; only
   then re-create with the same number. **Why this is safe:** a DRAFT cannot be paid, so a late
@@ -238,7 +239,7 @@ faster. Reconciliation is correct with zero webhooks.
 | Provider observation | Result |
 |---|---|
 | DRAFT/SENT/UNPAID/SCHEDULED, no transactions, before deadline | unchanged; poll again |
-| same, after deadline | `cancel_payment_session` → GET CANCELLED → `expired`, release |
+| same, after deadline | policy (§16): auto-cancel **disabled** (pilot) → operator review, nothing cancelled or released, polling continues; enabled → `cancel_payment_session` → GET CANCELLED → `expired`, release |
 | PAYMENT_PENDING | `provider_pending` |
 | PAID: currency USD, total = `A`, item total = `A + C`, discount = `C`, paid = `A`, due 0, exactly one SUCCESS transaction of `A` | GET capture: COMPLETED, `invoice_id` matches, gross USD `A`, payee merchant fingerprint = binding → `provider_confirmed` → book (§7.3) |
 | PARTIALLY_PAID, >1 transaction, amount/currency/payee mismatch | `exception` (no posting; reservation kept) |
@@ -343,7 +344,7 @@ Errors keep the P4 shape. Cross-tenant access stays an identical `404`.
   and no invoice identity to reconcile against the obligation. Kept as a documented fallback.
 - **Store the payer-view link encrypted:** rejected; fetching it on demand avoids storing a
   bearer link at all.
-- **Rely on `PayPal-Request-Id` for create/send:** rejected; not documented for these endpoints.
+- **Rely on `PayPal-Request-Id` alone for create/send:** rejected. It is sent and persisted, but the endpoint schema does not list it, the generic guide says "not all APIs support this header" and that a concurrent duplicate "might fail"; search and GET stay authoritative (§16).
 - **Treat timeouts as failures and retry:** rejected (doc 10: never blind-retry).
 - **Release the reservation when the next balance snapshot arrives:** rejected; a snapshot can
   predate or omit the outflow. Release needs explicit inclusion.
@@ -407,3 +408,78 @@ Implemented as designed, with these decisions and divergences:
   P5 browser surface is covered by jsdom tests; the P4 Playwright suite passes unchanged.
 - Operator tooling for resolving `exception` / dead letters is data-only (rows and audit);
   there is no resolution UI.
+
+## 16. Gate review corrections (2026-11-12)
+
+Owner review of `613d72f` (CI run #25). Both findings were reproduced before any fix
+(`evidence/phase5/gate_review_reproduction_2026-11-12.md`).
+
+### 16.1 Cancellation policy (finding 1)
+
+- **Problem:** `observe()` scheduled `POST .../cancel` once the pay-by time passed, and again
+  when the approver's authority was revoked after send. Automatic cancellation is excluded
+  from the initial pilot (owner decision).
+- **Policy:** `AUTO_CANCEL_UNPAID` (`Runtime.auto_cancel`), default **false**.
+- **Disabled (pilot):** the deadline or a revoked authority opens one operator-review
+  exception (`PAY_DEADLINE_PASSED_REVIEW` / `AUTHORIZATION_REVOKED_REVIEW`). It makes no
+  cancel call, releases no cash and changes no local state. Read-only reconciliation goes on
+  at a slower poll, so a late payment is still booked once. Only a PayPal-confirmed
+  cancellation (by GET) ends the payment as expired/cancelled. The payer link is refused
+  after the deadline (`PAY_DEADLINE_PASSED`) and while a review is open (`NEEDS_REVIEW`).
+- **Unchanged:** explicit payer cancellation (`POST /payment-intents/{id}/cancel`), the kill
+  switch (no provider mutation at all when off) and the payment-races-cancellation path.
+  With the policy enabled, the previous behaviour is kept and tested.
+
+### 16.2 Provider request identity (finding 2)
+
+Primary sources (fetched 2026-11-12):
+
+| Source | Says |
+|---|---|
+| Invoicing "Core concepts" (`developer.paypal.com/invoicing/core-concepts`, updated 2026-10-02) | "Use the `PayPal-Request-Id` header to make requests idempotent"; retry with the same id after a network error; PayPal returns the original result "without creating a duplicate invoice"; invoice numbers "must be unique within your PayPal invoices" |
+| REST request guide (`developer.paypal.com/docsai/developer/how-to/api/make-api-requests`, updated 2026-10-02) | recommended for all POST and PUT calls; stored "for up to 45 days"; a retry returns the result of the original call |
+| Idempotency guidelines (`developer.paypal.com/reference/guidelines/idempotency`, updated 2026-10-02) | "Not all APIs support this header"; a reuse returns the *latest* status; unique per API call type; of two concurrent requests with the same id PayPal "might fail the second" |
+| Invoicing v2 schema / endpoint reference (`developer.paypal.com/api/invoicing/v2/schema.json`, modified 2026-11-09) | defines the header in components but does not attach it to create, send or cancel |
+
+**Discrepancy:** the guides document the header for invoicing, but the endpoint reference does
+not list it, and the generic guide qualifies its behaviour (latest status, possible failure
+of concurrent duplicates). **Conservative behaviour implemented:**
+
+- **Stable identity.** Migration `0007` adds `provider_request`, one append-only row per
+  (intent, create/send/cancel). Its id is deterministic (`elide-<intent>-<op>`), and it records
+  the digest of the request it was first used for. Every attempt links to it
+  (`provider_operation.request_id`, `attempt_no`) and sends that id.
+- **Conflicting payloads.** A changed payload under the same logical operation is refused
+  before any call (`PROVIDER_REQUEST_CONFLICT`: operator review, cash kept).
+- **No re-issue after success.** A mutation whose logical request already succeeded is never
+  re-issued (`REQUEST_ALREADY_SUCCEEDED`): the worker re-reads PayPal instead. This was found
+  by the duplicate-dispatch test.
+- **Refusals of retries are unknown, not failures.** A refusal (400/404/409/422) of a
+  *retried* mutation, and any 409, is treated as an unknown outcome and looked up. It may
+  mean the first attempt succeeded: the number is taken, or PayPal failed a duplicate id.
+- **Search and GET stay authoritative.** Lookup by invoice number and the GET before every
+  send are kept; nothing trusts idempotency alone.
+- **Lease fencing.** Post-call writes (adopting the invoice, state changes after send or
+  failure) require the worker's lease. A late reply from a worker that was taken over is
+  recorded (`provider.late_reply`) and changes nothing.
+
+### 16.3 Browser coverage
+
+`scripts/e2e_app.py` runs the real API with an in-process mock provider and loopback-only
+test controls (run the worker, simulate the payer at "PayPal", list mock calls). It is not
+part of the product. `web/e2e/payments.spec.ts` (4 tests) covers:
+- the payer prepares an intent and the worker creates and sends;
+- the hosted link is available to the payer only;
+- PAID reconciles;
+- scoped settlement views, with the receipt labelled not spendable;
+- a wrong-payee capture goes to review;
+- a stale authorization never reaches the provider.
+
+Requests to the Sandbox host are aborted in those tests.
+
+### 16.4 Tests
+
+- 16 new PostgreSQL cases in `tests/integration/test_p5_gate_review.py` (the 2
+  reproductions and 14 regressions).
+- The two auto-cancel tests in `test_p5_failures.py` now enable the policy explicitly.
+- 2 jsdom tests for the settlements view and 4 Playwright tests.

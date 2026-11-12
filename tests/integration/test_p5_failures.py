@@ -488,7 +488,7 @@ def test_unpaid_by_deadline_is_cancelled_at_provider_then_released(pilot):
     p = pilot
     _, iid, inv = _sent(p)
     p.advance(days=4)  # past the agreed pay-by date
-    p.work()
+    p.work(auto_cancel=True)  # the feature, explicitly enabled (off for the pilot)
     assert p.mock.invoices[inv]["status"] == "CANCELLED"
     assert _status(p, iid) == "expired" and _released(p, iid)[0] is True
 
@@ -532,7 +532,7 @@ def test_revoked_payer_authority_after_send_cancels_the_invoice(pilot):
     _, iid, inv = _sent(p)
     with p.engine.begin() as c:
         _revoke_buyer(c, p)
-    p.work()
+    p.work(auto_cancel=True)
     assert p.mock.invoices[inv]["status"] == "CANCELLED" and _status(p, iid) == "cancelled"
 
 

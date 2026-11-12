@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # dispatched. "mock": in-memory double, refused in production. "paypal_sandbox": the
     # Sandbox REST API with the credentials below.
     payment_provider: Literal["none", "mock", "paypal_sandbox"] = "none"
+    # Cancellation policy (ADR-0012 §16). False (the initial pilot): a passed pay-by time or
+    # a revoked authority opens an operator review; nothing is cancelled automatically.
+    auto_cancel_unpaid: bool = False
     worker_poll_seconds: int = Field(default=60, ge=5, le=3600)
     worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
 

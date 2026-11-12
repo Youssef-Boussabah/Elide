@@ -12,7 +12,17 @@ Fault injection (`inject(operation, fault)`, consumed in order):
 - `"5xx_after"`: processed, then HTTP 500 -> UNKNOWN;
 - `"reject"` (422), `"forbidden"` (403), `"not_found"` (404): refused, nothing happens.
 `search_lag(n)` hides newly created invoices from the next n searches (eventual
-consistency). Every call is logged in `calls` (operation, args) for assertions.
+consistency). Every call is logged in `calls` (operation, args), and the PayPal-Request-Id
+of every mutating call in `request_log` (operation, request id).
+
+Documented PayPal behaviour it models (Invoicing "Core concepts", 2026-10-02), each
+switchable so the conservative paths are tested both ways:
+- `honor_request_id`: a mutating call repeated with the same request id returns the
+  original result instead of acting again;
+- `unique_numbers`: invoice numbers are unique per merchant; a second create with a used
+  number is refused (422; the error detail used here is a mock choice, not PayPal's);
+- `inject(op, "conflict")`: a concurrent duplicate with the same id fails (the generic
+  idempotency guide says PayPal "might fail the second request").
 
 Refused in production (`build_mock_provider`).
 """
@@ -62,7 +72,13 @@ class MockPayPal:
         fee_bps: int = 349,
         fixed_fee_cents: int = 49,
         clock=None,
+        honor_request_id: bool = True,
+        unique_numbers: bool = True,
     ):
+        self.honor_request_id = honor_request_id
+        self.unique_numbers = unique_numbers
+        self.request_log: list[tuple[str, str]] = []
+        self._by_request: dict[tuple[str, str], ProviderResult] = {}
         self.client_id = client_id
         self.payee_merchant_id = payee_merchant_id
         self.settlement_currency = settlement_currency
@@ -108,8 +124,20 @@ class MockPayPal:
             op, outcome or classify_status(op, status), status, copy.deepcopy(body), "mockdbg", name
         )
 
+    def _replayed(self, op: str, key: str) -> ProviderResult | None:
+        self.request_log.append((op, key))
+        if self.honor_request_id and (op, key) in self._by_request:
+            return copy.deepcopy(self._by_request[(op, key)])
+        return None
+
+    def _remember(self, op: str, key: str, res: ProviderResult) -> None:
+        if res.http_status is not None and res.http_status < 300:
+            self._by_request[(op, key)] = copy.deepcopy(res)
+
     def _pre(self, op: str) -> tuple[str | None, ProviderResult | None]:
         f = self._fault(op)
+        if f == "conflict":
+            return f, self._result(op, 409, {"name": "DUPLICATE_REQUEST_IN_PROGRESS"})
         if f == "before":
             return f, ProviderResult(op, Outcome.RETRYABLE, None, None, None, "ConnectError")
         if f == "reject":
@@ -133,9 +161,20 @@ class MockPayPal:
     # -- PaymentProvider ---------------------------------------------------------------------
     def create_invoice(self, payload: dict[str, Any], request_key: str) -> ProviderResult:
         self.calls.append(("create_invoice", (payload.get("detail", {}).get("invoice_number"),)))
+        replay = self._replayed("create_invoice", request_key)
+        if replay is not None:
+            return replay
         fault, early = self._pre("create_invoice")
         if early:
             return early
+        number = payload["detail"].get("invoice_number")
+        if self.unique_numbers and any(
+            i["detail"].get("invoice_number") == number for i in self.invoices.values()
+        ):
+            detail = [{"issue": "MOCK_DUPLICATE_INVOICE_NUMBER"}]
+            return self._result(
+                "create_invoice", 422, {"name": "UNPROCESSABLE_ENTITY", "details": detail}
+            )
         detail = payload["detail"]
         cur = detail["currency_code"]
         items = payload["items"]
@@ -183,12 +222,15 @@ class MockPayPal:
         self.invoices[inv_id] = inv
         if self._search_lag:
             self._hidden.add(inv_id)
-        return self._post(
-            "create_invoice", fault, self._result("create_invoice", 201, self._view(inv))
-        )
+        ok = self._result("create_invoice", 201, self._view(inv))
+        self._remember("create_invoice", request_key, ok)
+        return self._post("create_invoice", fault, ok)
 
     def send_invoice(self, invoice_id: str, request_key: str) -> ProviderResult:
         self.calls.append(("send_invoice", (invoice_id,)))
+        replay = self._replayed("send_invoice", request_key)
+        if replay is not None:
+            return replay
         fault, early = self._pre("send_invoice")
         if early:
             return early
@@ -204,10 +246,15 @@ class MockPayPal:
             "href": inv["detail"]["metadata"]["recipient_view_url"],
             "method": "GET",
         }
-        return self._post("send_invoice", fault, self._result("send_invoice", 200, body))
+        ok = self._result("send_invoice", 200, body)
+        self._remember("send_invoice", request_key, ok)
+        return self._post("send_invoice", fault, ok)
 
     def cancel_invoice(self, invoice_id: str, request_key: str) -> ProviderResult:
         self.calls.append(("cancel_invoice", (invoice_id,)))
+        replay = self._replayed("cancel_invoice", request_key)
+        if replay is not None:
+            return replay
         fault, early = self._pre("cancel_invoice")
         if early:
             return early
@@ -218,7 +265,9 @@ class MockPayPal:
             return self._result("cancel_invoice", 422, {"name": "UNPROCESSABLE_ENTITY"})
         inv["status"] = "CANCELLED"
         inv["detail"]["metadata"]["cancel_time"] = self._now()
-        return self._post("cancel_invoice", fault, self._result("cancel_invoice", 204, None))
+        ok = self._result("cancel_invoice", 204, None)
+        self._remember("cancel_invoice", request_key, ok)
+        return self._post("cancel_invoice", fault, ok)
 
     def get_invoice(self, invoice_id: str) -> ProviderResult:
         self.calls.append(("get_invoice", (invoice_id,)))

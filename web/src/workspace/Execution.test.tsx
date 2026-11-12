@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaymentIntent } from "../api/types";
 import { installFakeBackend } from "../test/fakeBackend";
-import { IntentRow } from "./Execution";
+import { IntentRow, SettlementsCard } from "./Execution";
 
 vi.mock("../auth/AuthContext", () => ({
   useAuth: () => ({ withStepUp: <T,>(fn: () => Promise<T>) => fn() }),
@@ -101,5 +101,36 @@ describe("execution states (ADR-0012)", () => {
     await waitFor(() => expect(changed).toHaveBeenCalled());
     expect(calls[0]?.method).toBe("POST");
     expect(calls[0]?.headers["Idempotency-Key"]).toMatch(/^op-/);
+  });
+});
+
+describe("settlements (ADR-0012 §9)", () => {
+  it("shows the payee its receipt as provider-confirmed and not spendable", async () => {
+    installFakeBackend(() => ({
+      status: 200,
+      body: {
+        settlements: [
+          {
+            role: "payee", intent_id: "pin_1", capture_id: "C1", gross_cents: 2400, fee_cents: 133,
+            net_cents: 2267, credited_cents: 2267, credited_currency: "USD",
+            receipt_status: "PROVIDER_CONFIRMED_NOT_SPENDABLE", usd_deployable_cents: 0,
+          },
+        ],
+      },
+    }));
+    render(<SettlementsCard merchant="pilot_seller" />);
+    await waitFor(() => expect(screen.getByText("PROVIDER CONFIRMED NOT SPENDABLE")).toBeTruthy());
+    expect(screen.getByText(/PayPal fee USD 1.33/)).toBeTruthy();
+    expect(screen.getByText("usable USD: USD 0.00")).toBeTruthy();
+  });
+
+  it("shows the payer only what it paid", async () => {
+    installFakeBackend(() => ({
+      status: 200,
+      body: { settlements: [{ role: "payer", intent_id: "pin_1", capture_id: "C1", paid_cents: 2400, currency: "USD" }] },
+    }));
+    render(<SettlementsCard merchant="pilot_buyer" />);
+    await waitFor(() => expect(screen.getByText("USD 24.00 paid via PayPal")).toBeTruthy());
+    expect(screen.queryByText(/PayPal fee/)).toBeNull();
   });
 });

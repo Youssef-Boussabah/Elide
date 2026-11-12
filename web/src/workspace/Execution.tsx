@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { api, explain, newOperationKey } from "../api/client";
 import { money } from "../api/format";
-import type { PaymentIntent } from "../api/types";
+import type { PaymentIntent, Settlement } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
-import { Badge, StateLabel } from "../components/ui";
+import { Badge, Card, Empty, ErrorBanner, StateLabel } from "../components/ui";
+import { useResource } from "../components/useResource";
 
 /** ADR-0012 §4.1: what each execution state means, in words a payer can act on. */
 const EXECUTION_LABEL: Record<string, { state: string; detail: string }> = {
@@ -33,6 +34,7 @@ const EXECUTION_LABEL: Record<string, { state: string; detail: string }> = {
 };
 
 const CANCELLABLE = new Set(["approved", "session_pending", "payer_action_pending"]);
+const SHOW_REASON = new Set(["failed", "expired", "cancelled", "exception"]);
 
 function heldReason(i: PaymentIntent): string | null {
   if (i.status !== "approved") return null;
@@ -115,6 +117,9 @@ export function IntentRow({
       <td>
         <StateLabel state={label.state} />
         <p className="mt-1 text-xs text-slate-600">{label.detail}</p>
+        {SHOW_REASON.has(intent.status) && intent.status_reason && (
+          <p className="mt-1 font-mono text-xs text-slate-700">reason: {intent.status_reason}</p>
+        )}
         {error && (
           <p role="alert" className="mt-1 text-xs text-red-700">
             {error}
@@ -151,5 +156,61 @@ export function IntentRow({
         </span>
       </td>
     </tr>
+  );
+}
+
+/** Reconciled payments from this merchant's side only (ADR-0012 §9). A receipt is PayPal-
+ * confirmed, never spendable here (D006); a non-USD credit is never USD capacity (D008). */
+export function SettlementsCard({ merchant }: { merchant: string }) {
+  const res = useResource<{ settlements: Settlement[] }>(`/v1/m/${merchant}/settlements`);
+  return (
+    <Card title="Settlements">
+      {res.error && <ErrorBanner message={res.error} onRetry={res.reload} />}
+      {res.data && res.data.settlements.length === 0 && (
+        <Empty>No PayPal-confirmed payments yet.</Empty>
+      )}
+      {res.data && res.data.settlements.length > 0 && (
+        <table className="table">
+          <caption className="sr-only">Reconciled PayPal payments</caption>
+          <thead>
+            <tr>
+              <th scope="col">Payment</th>
+              <th scope="col">Your side</th>
+              <th scope="col">Amounts</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {res.data.settlements.map((st) => (
+              <tr key={st.capture_id} aria-label={`Settlement ${st.intent_id}`}>
+                <td className="font-mono text-xs">{st.intent_id}</td>
+                <td>{st.role === "payee" ? "You received" : "You paid"}</td>
+                <td>
+                  {st.role === "payee" ? (
+                    <span>
+                      gross {money(st.gross_cents ?? 0)}, PayPal fee {money(st.fee_cents ?? 0)}, net{" "}
+                      {money(st.net_cents ?? 0)}; credited {st.credited_currency}{" "}
+                      {((st.credited_cents ?? 0) / 100).toFixed(2)}
+                    </span>
+                  ) : (
+                    <span>{money(st.paid_cents ?? 0)} paid via PayPal</span>
+                  )}
+                </td>
+                <td>
+                  {st.role === "payee" ? (
+                    <span className="flex flex-col items-start gap-1">
+                      <StateLabel state={st.receipt_status ?? "PROVIDER_CONFIRMED_NOT_SPENDABLE"} />
+                      <Badge tone="warn">usable USD: {money(st.usd_deployable_cents ?? 0)}</Badge>
+                    </span>
+                  ) : (
+                    <Badge tone="neutral">kept committed until your next balance attestation</Badge>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
   );
 }

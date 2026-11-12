@@ -25,7 +25,7 @@ Every intent response carries `money_moved`, `provider_confirmed` and `funds_usa
 | Method | Path | Permission | Notes |
 |---|---|---|---|
 | GET | `/payment-intents/{id}` | `workspace:read` (payer or payee) | State, reason, history, exceptions (codes), session summary (no link). Payer also sees its reservation; payee sees its settlement (fee, net, credit, receipt status) |
-| GET | `/payment-intents/{id}/payer-link` | `payment:authorize` + step-up, payer only | Fetches the invoice by GET, re-checks terms, returns `recipient_view_url` (Sandbox host only). `Cache-Control: no-store`. `409 NOT_AWAITING_PAYER`, `409 PROVIDER_TERMS_MISMATCH`, `409 PROVIDER_UNAVAILABLE` |
+| GET | `/payment-intents/{id}/payer-link` | `payment:authorize` + step-up, payer only | Fetches the invoice by GET, re-checks terms, returns `recipient_view_url` (Sandbox host only). `Cache-Control: no-store`. `409 NOT_AWAITING_PAYER`, `409 PAY_DEADLINE_PASSED`, `409 NEEDS_REVIEW`, `409 PROVIDER_TERMS_MISMATCH`, `409 PROVIDER_UNAVAILABLE` |
 | POST | `/payment-intents/{id}/cancel` | `payment:authorize` + step-up, payer only, Idempotency-Key | `approved`: cancelled now, cash released. `session_pending`/`payer_action_pending`: cancellation requested; cash released only after PayPal's cancellation is confirmed by GET. Otherwise `409 CANNOT_CANCEL` |
 | POST | `/capacity-evidence` | `payment:authorize` + step-up, Idempotency-Key | Merchant-attested USD balance: `verified_spendable_cents`, `protected_reserve_cents`, `valid_hours` (1-72), `included_receipt_ids`, `included_outflow_ids`. Listing a settled outflow releases exactly that commitment. Refused for synthetic merchants (`409 SYNTHETIC_MERCHANT`); foreign outflow ids `404` |
 | GET | `/settlements` | `workspace:read` | Reconciled captures where the merchant is payer or payee, scoped as above |
@@ -43,3 +43,13 @@ The body never changes state.
 `approved`, `session_pending`, `payer_action_pending`, `provider_pending`,
 `provider_unknown`, `provider_confirmed`, `reconciled`, `failed`, `expired`, `cancelled`,
 `exception`. Transitions are enforced by the database (ADR-0012 §4.1).
+
+## Cancellation policy and review codes (gate review, ADR-0012 §16)
+
+`AUTO_CANCEL_UNPAID=false` (default; the initial pilot). An unpaid invoice past its pay-by
+time, or one whose approver lost authority after it was sent, stays in
+`payer_action_pending` with an open review item in `exceptions`
+(`PAY_DEADLINE_PASSED_REVIEW`, `AUTHORIZATION_REVOKED_REVIEW`); no cancel call is made and the
+cash stays reserved. Other review codes: `PROVIDER_REQUEST_CONFLICT`, `CAPTURE_MISMATCH`,
+`PARTIAL_PAYMENT`, `MARKED_AS_PAID_NOT_PROVIDER_EVIDENCE`, `PAID_TERMS_MISMATCH`,
+`DEAD_LETTER`, `REFUND_OBSERVED`.

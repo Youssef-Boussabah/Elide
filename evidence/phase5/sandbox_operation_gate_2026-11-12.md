@@ -4,6 +4,17 @@
 PayPal. It describes the one Sandbox operation that would produce the P5 gate evidence
 (ADR-0012 acceptance A13), so the owner can authorize it, change it, or refuse it.
 
+**Revised after the owner's gate review (2026-11-12):**
+- **Mutating PayPal calls are still not authorized.** No invoice has been created, sent,
+  cancelled, refunded or paid, and the worker has not been enabled against PayPal.
+- **Automatic cancellation is excluded** from this pilot (`AUTO_CANCEL_UNPAID=false`, the
+  default). If the invoice is still unpaid at the pay-by time, Elide opens an operator review.
+  It does not cancel and does not release the cash.
+- Amounts: a **USD 25.00** invoice, a **USD 1.00** concession, a **USD 24.00** hosted payment.
+- **Sandbox pilot identities only** (TEST merchants bound to Sandbox accounts).
+  **No production payments**: the client refuses any non-Sandbox URL.
+- Each create/send has one persisted `PayPal-Request-Id`, reused on retries (ADR-0012 §16.2).
+
 Branch `feat/p5-paypal-execution`. Everything before this gate is **Synthetic-tested**
 (mock provider), except the read-only probe below (**Sandbox-verified, read only**).
 
@@ -42,16 +53,17 @@ calls: OAuth, `GET /v2/invoicing/invoices/{P0 invoice}`, `POST /v2/invoicing/sea
 |---|---|---|---|
 | 1 | Owner | `uv run python scripts/seed_sandbox_pilot.py` (local DB) | none |
 | 2 | Owner | `uv run python scripts/bind_sandbox_accounts.py --payee pilot_seller --payer pilot_buyer --payee-fingerprint redacted:6dbc83888cc3 --consent "..." --confirm` (local DB) | none |
-| 3 | Owner | In `.env`: `PAYMENT_PROVIDER=paypal_sandbox`, `PAYMENTS_EXECUTION_ENABLED=true`; restart the API | none |
+| 3 | Owner | In `.env`: `PAYMENT_PROVIDER=paypal_sandbox`, `PAYMENTS_EXECUTION_ENABLED=true`, `AUTO_CANCEL_UNPAID=false` (keep); restart the API | none |
 | 4 | Owner (as `pilot_buyer`) | In the workspace: attest own balance (merchant-attested, e.g. USD 200.00 with USD 50.00 reserve), accept the USD 1.00 offer, create the plan, approve the USD 24.00 leg (step-up), prepare the payment intent | none |
-| 5 | Worker (`scripts/run_worker.py --once`) | Revalidate; create the draft | `POST /v1/oauth2/token`; `POST /v2/invoicing/invoices` (DRAFT) |
-| 6 | Worker | Verify the draft; revalidate; send; verify | `GET /v2/invoicing/invoices/{id}`; `POST /v2/invoicing/invoices/{id}/send` (`send_to_recipient=true`: PayPal emails the Sandbox payer, as in P0); `GET` |
+| 5 | Worker (`scripts/run_worker.py --once`) | Revalidate; create the draft | `POST /v1/oauth2/token`; `POST /v2/invoicing/invoices` (DRAFT; `PayPal-Request-Id: elide-<intent>-create`); a read-only `POST /v2/invoicing/search-invoices` only if a reply is lost |
+| 6 | Worker | Verify the draft; revalidate; send; verify | `GET /v2/invoicing/invoices/{id}`; `POST /v2/invoicing/invoices/{id}/send` (`send_to_recipient=true`: PayPal emails the Sandbox payer, as in P0; `PayPal-Request-Id: elide-<intent>-send`); `GET` |
 | 7 | Owner (as the Sandbox payer) | "Open PayPal payment page" (link fetched by GET, never stored); log in as the Sandbox Personal account and pay in PayPal's page | `GET /v2/invoicing/invoices/{id}` (link); the payment itself is the owner's action at PayPal |
 | 8 | Worker | Reconcile and book | `GET /v2/invoicing/invoices/{id}` (PAID); `GET /v2/payments/captures/{capture}` |
 | 9 | Worker / script | Duplicate replay: run reconciliation again and a second provider fetch | `GET` only; must book nothing new |
-| (only if unpaid by the deadline) | Worker | Cancel the unpaid invoice, confirm by GET | `POST /v2/invoicing/invoices/{id}/cancel` — **listed so the owner can include or exclude it** |
+| (unpaid at the pay-by time) | Worker | **No cancellation** (owner decision): operator review opened, cash stays reserved, read-only polling continues | `GET` only. `POST .../cancel` is **excluded** from this operation; it would need its own authorization (or a payer cancellation in the workspace) |
 
-No refund, capture, "record payment", invoice update or deletion is part of this operation.
+No cancellation, refund, capture, "record payment", invoice update or deletion is part of this
+operation.
 
 ## 3. Financial and privacy implications
 

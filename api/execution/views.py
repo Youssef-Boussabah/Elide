@@ -229,6 +229,18 @@ def payer_link(
         .mappings()
         .one()
     )
+    if at >= sess["pay_deadline"]:
+        raise ConflictError(
+            "the agreed pay-by time has passed; an operator must review this payment",
+            code="PAY_DEADLINE_PASSED",
+        )
+    review = conn.execute(
+        select(payment_exception.c.code).where(
+            payment_exception.c.intent_id == intent_id, payment_exception.c.resolved_at.is_(None)
+        )
+    ).first()
+    if review is not None:
+        raise ConflictError("this payment is under operator review", code="NEEDS_REVIEW")
     inv_id = sess["provider_invoice_id"]
     g = provider.get_invoice(inv_id)
     conn.execute(

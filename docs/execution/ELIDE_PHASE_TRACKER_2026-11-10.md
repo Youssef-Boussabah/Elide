@@ -1,5 +1,5 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 **implemented on `feat/p5-paypal-execution` (synthetic-tested; read-only Sandbox-verified), pending owner review; the controlled Sandbox payment is NOT authorized or performed**. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 **implemented on `feat/p5-paypal-execution` (synthetic-tested; read-only Sandbox-verified), conditionally approved by the owner for the mock-tested architecture (review of `613d72f`, CI run #25); gate-review corrections applied; the controlled Sandbox payment is NOT authorized or performed**. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | **Complete** (owner-approved `dc5949e`, CI run #17; merged `3100091`, CI run #18): real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled development cases; 633 tests pass | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | **Complete** (owner-approved `7d971d9`, CI run #21; merged `1ed309a`, CI run #22): 689 backend, 18 frontend, 5 Playwright tests pass; synthetic scope only, outbox held | E2E run and auth isolation test |
-| P5 | Actual PayPal payer payment + provider GET + safe replay | **Implemented, gate pending** (see P5 detail): execution state machine, durable outbox worker, PayPal adapter, reconciliation and booking; 764 backend / 24 frontend / 5 Playwright pass; read-only Sandbox probe passed. **Missing:** one owner-authorized Sandbox payment (A13) and a verified webhook (A14) | Redacted receipt + journal + webhook replay |
+| P5 | Actual PayPal payer payment + provider GET + safe replay | **Implemented, gate pending** (see P5 detail): execution state machine, durable outbox worker, PayPal adapter, reconciliation and booking; owner gate review corrected (automatic cancellation off for the pilot; stable `PayPal-Request-Id`); 782 backend / 26 frontend / 9 Playwright pass; read-only Sandbox probe passed. **Missing:** one owner-authorized Sandbox payment (A13) and a verified webhook (A14) | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
 | P7 | Public license/repo, working demo, video, submission | Not started | Public links, release SHA, submission receipt |
 
@@ -905,6 +905,51 @@ idempotency uses deterministic invoice numbers, search-based lookup and GET-befo
    reconciliation works by polling without it).
 3. Refund posting waits for an observed Sandbox refund (severity: low for the gate).
 
+### P5 owner gate review and corrections (2026-11-12)
+
+- **Review:** the owner conditionally approved the mock-tested architecture at
+  `613d72fc92f1d0614d86db1b6c02120708b6bad0`. Final CI on that commit:
+  [run #25](https://github.com/Youssef-Boussabah/Elide/actions/runs/43202494698), with
+  backend, frontend and e2e all success.
+- **Instructions:** do not merge P5 and make no mutating PayPal call. Two issues had to be
+  corrected before the controlled Sandbox payment.
+- **Reproduction:** both findings were reproduced on `613d72f` before any fix:
+  `evidence/phase5/gate_review_reproduction_2026-11-12.md`. The design is in ADR-0012 §16.
+
+| # | Finding | Root cause | Correction |
+|---|---|---|---|
+| 1 | Automatic cancellation at the pay deadline (owner: exclude from the pilot) | `observe()` called `request_cancel()` unconditionally after `pay_deadline`, and again on a revoked authority | `AUTO_CANCEL_UNPAID` (default off). Off: operator review, no cancel call, no release, polling continues, the payer link is refused after the deadline; only a PayPal-confirmed cancellation ends the payment. Explicit payer cancellation unchanged; the feature stays implemented and tested with the policy on |
+| 2 | Fresh `PayPal-Request-Id` per attempt | `_begin_op()` used a random per-attempt key as the request id | Migration `0007`: persisted `provider_request` per logical create/send/cancel, reused on every attempt; conflicting payload refused; a refused *retry* or any 409 is treated as unknown; a succeeded mutation is never re-issued; post-call writes lease-fenced; late replies audited |
+
+**PayPal primary sources (fetched 2026-11-12):**
+- The Invoicing "Core concepts" page and the REST request guide (both updated 2026-10-02)
+  document `PayPal-Request-Id`: retries return the original result, IDs are kept up to
+  45 days, and invoice numbers must be unique.
+- The Invoicing v2 endpoint schema (modified 2026-11-09) still does not attach the header
+  to create, send or cancel.
+- That discrepancy is documented in ADR-0012 §16.2, which also corrects the earlier claim
+  that both were undocumented.
+
+**Found while testing (also corrected):**
+1. Duplicate dispatch could re-issue a send that had already succeeded.
+2. A duplicate dispatch raised an uncaught `TransitionError`.
+3. On Windows, P3's spend-guard file lock treated a delete-pending lock as an error
+   (`PermissionError`). It failed closed, so there was no spend risk, but it was flaky
+   under contention. Retrying both errors fixed it: 30 of 30 runs then passed. No model call
+   was made.
+
+| Check (gate-review corrections) | Result |
+|---|---|
+| `ruff check` / `ruff format --check` / `alembic check` | pass / pass (235 files) / no drift (head `0007_p5_request_identity`; up/down/up ok) |
+| `pytest` (full) | **782 passed, 0 failed, 0 skipped** (764 previous + 16 gate-review + 2 spend-guard) |
+| Frontend `typecheck` / `lint` / `test` | exit 0 / exit 0 / **26 passed** |
+| Playwright (local, harness app with the mock provider) | **9 passed** (4 new P5 payment tests + 5 P4, twice) |
+| Secret scan of the 65 changed files (values from `.env`) | 0 hits; no `.env`, `raw/` or `.local/` paths staged |
+| PayPal / model / money | none: no mutating PayPal call, no read call either in this round, no model call |
+
+**The probe is unchanged.** `evidence/phase5/readonly_probe_20261112T103417Z.json` keeps its
+original `cd40638+dirty` provenance.
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -1045,3 +1090,11 @@ idempotency uses deterministic invoice numbers, search-based lookup and GET-befo
   5 Playwright pass. Read-only Sandbox probe passed (no mutation). No new PayPal payment, no
   credential change, no model call. Not merged. **Next task:** owner review of P5 and the
   gate proposal; the Sandbox operation only after explicit authorization.
+- 2026-11-12 (Claude Code, Opus 5.5): owner gate review of `613d72f` (CI run #25). Reproduced
+  and fixed both findings (automatic cancellation disabled for the pilot; persisted stable
+  `PayPal-Request-Id` with conservative retry handling, migration 0007). Found and fixed a
+  duplicate-dispatch double send, an uncaught dispatch race and a Windows spend-lock flake.
+  Added the mock-provider browser harness and 4 Playwright payment tests. 782 backend / 26
+  frontend / 9 Playwright pass. No PayPal mutation, no model call. Not merged; the worker is
+  not enabled against PayPal. **Next task:** owner review; the Sandbox operation only after
+  explicit authorization.

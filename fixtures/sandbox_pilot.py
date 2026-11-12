@@ -7,10 +7,10 @@ accounts (no real money):
 - `pilot_buyer` (payer): would be bound to the Sandbox Personal account that pays in
   PayPal's hosted page.
 
-`pilot_001`: pilot_buyer owes pilot_seller `face_cents` (default USD 25.00), due in 10
-days, merchant-entered. The seller's open offer: `concession_cents` off (default USD 1.00)
-if paid within 3 days (signed by the seller only). The buyer's confirmed policy keeps
-USD 50.00 protected.
+`pilot_001` (and `pilot_002`... with `obligations`): pilot_buyer owes pilot_seller
+`face_cents` (default USD 25.00), due in 10 days, merchant-entered. The seller's open
+offer on each: `concession_cents` off (default USD 1.00) if paid within 3 days (signed by
+the seller only). The buyer's confirmed policy keeps USD 50.00 protected.
 
 What this seed does NOT do (each is a separate, explicit human step):
 - bind PayPal accounts (`scripts/bind_sandbox_accounts.py`, owner action);
@@ -123,11 +123,15 @@ def seed_pilot(
     face_cents: int = 2500,
     concession_cents: int = 100,
     attest_buyer: tuple[int, int] | None = None,
+    obligations: int = 1,
 ) -> PilotSeed:
     if not allowed:
         raise RuntimeError("pilot identities may only be seeded in local, test or ci")
     if not 0 < concession_cents < face_cents:
         raise ValueError("the concession must be positive and below the face amount")
+    if not 1 <= obligations <= 9:
+        raise ValueError("1 to 9 pilot obligations")
+    obligation_ids = [f"pilot_{n:03d}" for n in range(1, obligations + 1)]
     passwords = passwords or {login: secrets.token_urlsafe(18) for login in USERS}
     t0 = now - timedelta(minutes=30)
     users: dict[str, str] = {}
@@ -152,25 +156,21 @@ def seed_pilot(
                     network_id=NETWORK_ID, merchant_id=m, joined_at=t0, share_aggregates=True
                 )
             )
-        ob = Obligation(
-            OBLIGATION_ID,
-            "pilot_buyer",
-            "pilot_seller",
-            Money(face_cents, USD),
-            t0,
-            _prov(t0, OBLIGATION_ID),
-        )
-        rev = ObligationRevision(
-            obligation_id=OBLIGATION_ID,
-            revision_no=1,
-            status=RevisionStatus.AUTHORIZED,
-            due_at=t0 + timedelta(days=10),
-            business_tz=TZ,
-            concession=Money(0, USD),
-            created_at=t0,
-            provenance=_prov(t0, OBLIGATION_ID),
-        )
-        save_record(conn, NETWORK_ID, InvoiceRecord.open(ob, rev))
+        for oid in obligation_ids:
+            ob = Obligation(
+                oid, "pilot_buyer", "pilot_seller", Money(face_cents, USD), t0, _prov(t0, oid)
+            )
+            rev = ObligationRevision(
+                obligation_id=oid,
+                revision_no=1,
+                status=RevisionStatus.AUTHORIZED,
+                due_at=t0 + timedelta(days=10),
+                business_tz=TZ,
+                concession=Money(0, USD),
+                created_at=t0,
+                provenance=_prov(t0, oid),
+            )
+            save_record(conn, NETWORK_ID, InvoiceRecord.open(ob, rev))
         buyer = users["pilot-buyer@elide.test"]
         draft = _policy(t0)
         draft_id = policies.save_draft(conn, draft, user_id=buyer, session_id="seed", at=t0)
@@ -184,19 +184,22 @@ def seed_pilot(
             at=t0,
             planning_assumptions={"hurdle_bps": 800, "source": f"assumption ({SEED_VERSION})"},
         )
-        offer = negotiation.propose(
-            conn,
-            merchant_id="pilot_seller",
-            user_id=users["pilot-seller@elide.test"],
-            session_id="seed",
-            obligation_id=OBLIGATION_ID,
-            concession_cents=concession_cents,
-            pay_by=t0 + timedelta(days=3),
-            expires_at=t0 + timedelta(days=2),
-            at=t0 + timedelta(minutes=5),
-            message=f"Pay {OBLIGATION_ID} early for ${concession_cents / 100:.2f} off.",
-            operation_key="seed:pilot-offer",
-        )
+        offer_ids = []
+        for n, oid in enumerate(obligation_ids):
+            offer = negotiation.propose(
+                conn,
+                merchant_id="pilot_seller",
+                user_id=users["pilot-seller@elide.test"],
+                session_id="seed",
+                obligation_id=oid,
+                concession_cents=concession_cents,
+                pay_by=t0 + timedelta(days=3),
+                expires_at=t0 + timedelta(days=2),
+                at=t0 + timedelta(minutes=5),
+                message=f"Pay {oid} early for ${concession_cents / 100:.2f} off.",
+                operation_key=f"seed:pilot-offer-{n}",
+            )
+            offer_ids.append(offer["offer_id"])
         if attest_buyer is not None:
             spendable, reserve = attest_buyer
             views.attest_capacity(
@@ -210,4 +213,4 @@ def seed_pilot(
                 included_outflow_ids=[],
                 at=t0 + timedelta(minutes=10),
             )
-    return PilotSeed(users, passwords, offer["offer_id"])
+    return PilotSeed(users, passwords, offer_ids[0])

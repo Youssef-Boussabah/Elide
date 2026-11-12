@@ -28,7 +28,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -61,6 +61,7 @@ from api.execution.tables import (
     payment_exception,
     payment_session,
     provider_operation,
+    provider_request,
     provider_settlement,
 )
 from api.integrations.paypal.execution import Outcome, PaymentProvider, ProviderResult
@@ -94,6 +95,11 @@ class Runtime:
     lookup_delay_s: float = 30.0
     lookup_retries: int = 3
     stale_op_s: float = 300.0
+    # Cancellation policy (gate review finding 1). False for the initial pilot: a passed
+    # deadline or a revoked authority opens an operator review instead of cancelling.
+    # Explicit payer cancellation (POST .../cancel) is unaffected.
+    auto_cancel: bool = False
+    review_poll_factor: float = 5.0
 
     @property
     def actor(self) -> str:
@@ -236,6 +242,53 @@ def _finish_without_payment(
 
 
 # -- provider operations ------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class Attempt:
+    """One provider call. Mutating calls belong to a logical request whose
+    `PayPal-Request-Id` is stable across every attempt (gate review finding 2)."""
+
+    op_id: int
+    operation: str
+    mutating: bool
+    request_id: str | None
+    attempt_no: int
+
+
+def request_id_for(intent_id: str, operation: str) -> str:
+    """Deterministic, unique per intent and call type (PayPal: unique per API call type)."""
+    return f"elide-{intent_id}-{operation.removesuffix('_invoice')}"
+
+
+def logical_request(
+    conn: Connection, intent_id: str, operation: str, request_sha: str, at: datetime
+) -> str:
+    """The persisted request identity of (intent, operation). First use records the
+    request digest; a later attempt with a different request is refused."""
+    conn.execute(
+        pg_insert(provider_request)
+        .values(
+            intent_id=intent_id,
+            operation=operation,
+            request_id=request_id_for(intent_id, operation),
+            request_sha256=request_sha,
+            created_at=at,
+        )
+        .on_conflict_do_nothing(constraint="uq_provider_request_logical")
+    )
+    row = conn.execute(
+        select(provider_request.c.request_id, provider_request.c.request_sha256).where(
+            provider_request.c.intent_id == intent_id, provider_request.c.operation == operation
+        )
+    ).one()
+    if row.request_sha256 != request_sha:
+        raise RevalidationError(
+            "PROVIDER_REQUEST_CONFLICT",
+            f"{operation} was first requested with different content; refusing to reuse "
+            "its request identity for a changed request",
+        )
+    return row.request_id
+
+
 def _begin_op(
     rt: Runtime,
     job: Job | None,
@@ -246,14 +299,37 @@ def _begin_op(
     mutating: bool,
     request: Any,
     check: Callable[[Connection], None] | None = None,
-) -> tuple[int, str]:
+) -> Attempt:
     now = rt.clock()
-    key = f"op-{secrets.token_hex(12)}"
+    key = f"op-{secrets.token_hex(12)}"  # this attempt's row identity, never sent to PayPal
     with rt.engine.begin() as conn:
         if job is not None and mutating:
             assert_lease(conn, job, now)
         if check is not None:
             check(conn)  # raises RevalidationError: nothing is recorded or called
+        request_id, attempt_no = None, 1
+        if mutating:
+            request_id = logical_request(conn, intent_id, operation, _sha(request), now)
+            done = conn.execute(
+                select(provider_operation.c.id).where(
+                    provider_operation.c.request_id == request_id,
+                    provider_operation.c.state == "succeeded",
+                )
+            ).first()
+            if done is not None:
+                # Never re-issue a mutation PayPal already confirmed (a duplicate dispatch
+                # read stale state): re-read the provider instead.
+                raise RevalidationError(
+                    "REQUEST_ALREADY_SUCCEEDED", f"{operation} already succeeded; re-reading"
+                )
+            attempt_no = (
+                1
+                + conn.execute(
+                    select(func.count())
+                    .select_from(provider_operation)
+                    .where(provider_operation.c.request_id == request_id)
+                ).scalar_one()
+            )
         try:
             with conn.begin_nested():
                 op_id = conn.execute(
@@ -268,6 +344,8 @@ def _begin_op(
                         state="started",
                         worker=rt.worker_id,
                         started_at=now,
+                        request_id=request_id,
+                        attempt_no=attempt_no if mutating else None,
                     )
                     .returning(provider_operation.c.id)
                 ).scalar_one()
@@ -275,38 +353,71 @@ def _begin_op(
             raise RevalidationError(
                 "PROVIDER_CALL_IN_FLIGHT", "another provider call is in flight"
             ) from exc
-    return op_id, key
+    return Attempt(op_id, operation, mutating, request_id, attempt_no)
 
 
-def _finish_op(rt: Runtime, op_id: int, res: ProviderResult) -> None:
-    state = {
-        Outcome.OK: "succeeded",
-        Outcome.UNKNOWN: "unknown",
-    }.get(res.outcome, "failed")
+def _conservative(att: Attempt, res: ProviderResult) -> ProviderResult:
+    """A refusal of a *retried* mutation may mean the first attempt succeeded (a
+    duplicate invoice number, or PayPal failing a duplicate request id), and a 409 on any
+    mutation may be a concurrent duplicate. Neither proves that nothing happened: treat
+    them as unknown and look the resource up."""
+    if not att.mutating:
+        return res
+    refused = res.outcome in (Outcome.REJECTED, Outcome.NOT_FOUND)
+    if (refused and att.attempt_no > 1) or res.http_status == 409:
+        return replace(res, outcome=Outcome.UNKNOWN, error_name=f"RETRY_REFUSED:{res.error_name}")
+    return res
+
+
+def _finish_op(rt: Runtime, att: Attempt, res: ProviderResult) -> ProviderResult:
+    res = _conservative(att, res)
+    state = {Outcome.OK: "succeeded", Outcome.UNKNOWN: "unknown"}.get(res.outcome, "failed")
+    outcome_code = (res.outcome.value + (f":{res.error_name}" if res.error_name else ""))[:60]
+    now = rt.clock()
     with rt.engine.begin() as conn:
-        conn.execute(
+        n = conn.execute(
             update(provider_operation)
-            .where(provider_operation.c.id == op_id, provider_operation.c.state == "started")
+            .where(provider_operation.c.id == att.op_id, provider_operation.c.state == "started")
             .values(
                 state=state,
                 http_status=res.http_status,
                 debug_id=(res.debug_id or None),
-                outcome_code=(res.outcome.value + (f":{res.error_name}" if res.error_name else ""))[
-                    :60
-                ],
+                outcome_code=outcome_code,
                 response_sha256=_sha(res.body) if res.body is not None else None,
-                finished_at=rt.clock(),
+                finished_at=now,
             )
-        )
+        ).rowcount
+        if n == 0:
+            # A late reply: another worker already reclassified this call after taking
+            # over. The first record stands; the late fact is kept in the audit trail.
+            audit.append(
+                conn,
+                at=now,
+                action="provider.late_reply",
+                object_type="provider_operation",
+                object_id=str(att.op_id),
+                detail={
+                    "operation": att.operation,
+                    "outcome": outcome_code,
+                    "http_status": res.http_status,
+                    "worker": rt.worker_id,
+                },
+            )
+    return res
 
 
 def _read(
     rt: Runtime, intent_id: str, session_id: str | None, op: str, fn, *args
 ) -> ProviderResult:
-    op_id, _ = _begin_op(rt, None, intent_id, session_id, op, mutating=False, request=list(args))
-    res = fn(*args)
-    _finish_op(rt, op_id, res)
-    return res
+    att = _begin_op(rt, None, intent_id, session_id, op, mutating=False, request=list(args))
+    return _finish_op(rt, att, fn(*args))
+
+
+def _fenced(conn: Connection, job: Job | None, at: datetime) -> None:
+    """Post-call writes of a mutating flow happen only while this worker still holds its
+    lease, so a late reply to a worker that was taken over changes nothing."""
+    if job is not None:
+        assert_lease(conn, job, at)
 
 
 def _resolve_stale_ops(rt: Runtime, intent_id: str) -> bool:
@@ -466,6 +577,18 @@ def _new_session(conn: Connection, rt: Runtime, intent: dict[str, Any], at: date
     )
 
 
+def _refused_before_call(rt: Runtime, intent_id: str, r: RevalidationError) -> Result:
+    """No provider call was made. In flight elsewhere: back off. A conflicting request:
+    operator review (cash stays reserved; the earlier request may have reached PayPal).
+    Anything else: cancel before anything payable exists."""
+    if r.code in ("PROVIDER_CALL_IN_FLIGHT", "REQUEST_ALREADY_SUCCEEDED"):
+        return Result("retry", delay_s=rt.lookup_delay_s, error=r.code)
+    if r.code == "PROVIDER_REQUEST_CONFLICT":
+        _mark_unknown(rt, intent_id, r.code)
+        return _to_exception(rt, intent_id, r.code, {"problems": [str(r)]})
+    return _cancel_before_payable(rt, intent_id, r.code)
+
+
 def _cancel_before_payable(rt: Runtime, intent_id: str, code: str) -> Result:
     """RevalidationError failed while no payable invoice exists (none, or an unsent DRAFT)."""
     now = rt.clock()
@@ -508,6 +631,12 @@ def handle_create_session(rt: Runtime, job: Job) -> Result:
                     actor=rt.actor,
                     at=now,
                 )
+        except TransitionError:
+            # A duplicate dispatch message: another worker dispatched this intent first
+            # (the session row is unique per intent). Re-read and continue from its state.
+            return Result("retry", delay_s=rt.lookup_delay_s, error="ALREADY_DISPATCHED")
+        except IntegrityError:
+            return Result("retry", delay_s=rt.lookup_delay_s, error="ALREADY_DISPATCHED")
         except RevalidationError as r:
             return _cancel_before_payable(rt, intent_id, r.code)
 
@@ -549,9 +678,9 @@ def handle_create_session(rt: Runtime, job: Job) -> Result:
             now = rt.clock()
             with rt.engine.begin() as conn:
                 open_exception(conn, intent_id, "DRAFT_TERMS_MISMATCH", {"problems": problems}, now)
-            return _fail_unsent(rt, intent_id, "DRAFT_TERMS_MISMATCH")
+            return _fail_unsent(rt, intent_id, "DRAFT_TERMS_MISMATCH", job)
         try:
-            op_id, key = _begin_op(
+            att = _begin_op(
                 rt,
                 job,
                 intent_id,
@@ -562,18 +691,15 @@ def handle_create_session(rt: Runtime, job: Job) -> Result:
                 check=check,
             )
         except RevalidationError as r:
-            if r.code == "PROVIDER_CALL_IN_FLIGHT":
-                return Result("retry", delay_s=rt.lookup_delay_s, error=r.code)
-            return _cancel_before_payable(rt, intent_id, r.code)
-        res = rt.provider.send_invoice(inv_id, key)
-        _finish_op(rt, op_id, res)
+            return _refused_before_call(rt, intent_id, r)
+        res = _finish_op(rt, att, rt.provider.send_invoice(inv_id, att.request_id))
         if res.outcome is Outcome.RETRYABLE:
             return Result("retry", error="SEND:RETRYABLE")
         if res.outcome is Outcome.UNKNOWN:
-            _mark_unknown(rt, intent_id, "SEND_OUTCOME_UNKNOWN")
+            _mark_unknown(rt, intent_id, "SEND_OUTCOME_UNKNOWN", job)
         g = _read(rt, intent_id, sess["session_id"], "get_invoice", rt.provider.get_invoice, inv_id)
         if not g.ok:
-            _mark_unknown(rt, intent_id, "SEND_NOT_CONFIRMED")
+            _mark_unknown(rt, intent_id, "SEND_NOT_CONFIRMED", job)
             return Result(
                 "retry", delay_s=rt.lookup_delay_s, error=f"GET_AFTER_SEND:{g.outcome.value}"
             )
@@ -581,7 +707,7 @@ def handle_create_session(rt: Runtime, job: Job) -> Result:
         if status == "DRAFT":
             if res.outcome in (Outcome.REJECTED, Outcome.FORBIDDEN, Outcome.NOT_FOUND):
                 return _fail_unsent(
-                    rt, intent_id, f"SEND_REJECTED:{res.error_name or res.http_status}"
+                    rt, intent_id, f"SEND_REJECTED:{res.error_name or res.http_status}", job
                 )
             return Result("retry", delay_s=rt.lookup_delay_s, error="STILL_DRAFT")
 
@@ -599,10 +725,11 @@ def handle_create_session(rt: Runtime, job: Job) -> Result:
             else []
         )
         if problems:
-            _mark_unknown(rt, intent_id, "SENT_TERMS_MISMATCH")
+            _mark_unknown(rt, intent_id, "SENT_TERMS_MISMATCH", job)
             return _to_exception(rt, intent_id, "SENT_TERMS_MISMATCH", {"problems": problems})
         now = rt.clock()
         with rt.engine.begin() as conn:
+            _fenced(conn, job, now)
             transition(
                 conn,
                 intent_id,
@@ -627,12 +754,13 @@ def handle_create_session(rt: Runtime, job: Job) -> Result:
                 at=now if status not in UNPAID else now + timedelta(seconds=rt.poll_s),
             )
         return DONE
-    _mark_unknown(rt, intent_id, f"UNEXPECTED_STATUS_{status}")
+    _mark_unknown(rt, intent_id, f"UNEXPECTED_STATUS_{status}", job)
     return _to_exception(rt, intent_id, "UNEXPECTED_PROVIDER_STATUS", {"status": status})
 
 
-def _mark_unknown(rt: Runtime, intent_id: str, reason: str) -> None:
+def _mark_unknown(rt: Runtime, intent_id: str, reason: str, job: Job | None = None) -> None:
     with rt.engine.begin() as conn, contextlib.suppress(TransitionError):
+        _fenced(conn, job, rt.clock())
         transition(
             conn,
             intent_id,
@@ -644,9 +772,10 @@ def _mark_unknown(rt: Runtime, intent_id: str, reason: str) -> None:
         )
 
 
-def _fail_unsent(rt: Runtime, intent_id: str, reason: str) -> Result:
+def _fail_unsent(rt: Runtime, intent_id: str, reason: str, job: Job | None = None) -> Result:
     now = rt.clock()
     with rt.engine.begin() as conn:
+        _fenced(conn, job, now)
         intent = _intent(conn, intent_id)
         transition(
             conn,
@@ -700,43 +829,47 @@ def _ensure_draft(rt, job, intent, sess, e, email, check):
                 {"count": len(found), "ids": [i.get("id") for i in found]},
             )
         if len(found) == 1:
-            return _adopt(rt, intent_id, found[0]["id"]), None
+            return _adopt(rt, intent_id, found[0]["id"], job), None
         if searches + 1 < rt.lookup_retries:
             return None, Result("retry", delay_s=rt.lookup_delay_s, error="LOOKUP_NOT_FOUND_YET")
-        # Not found after repeated searches: re-create with the SAME invoice number. Safe:
-        # a late duplicate would be an unpayable DRAFT, detected by the next search.
+        # Not found after repeated searches: re-create with the SAME invoice number and the
+        # SAME PayPal-Request-Id. PayPal documents that a retried request id returns the
+        # original result and that invoice numbers are unique; Elide relies on neither: a
+        # late duplicate would be an unpayable DRAFT, detected by the next search, and a
+        # refusal of this retry is treated as unknown (`_conservative`).
     payload = build_payload(e, email)
     try:
-        op_id, key = _begin_op(
+        # The digest covers the whole payload, recipient included (only its hash is stored).
+        att = _begin_op(
             rt,
             job,
             intent_id,
             sess["session_id"],
             "create_invoice",
             mutating=True,
-            request={k: v for k, v in payload.items() if k != "primary_recipients"},
+            request=payload,
             check=check,
         )
     except RevalidationError as r:
-        if r.code == "PROVIDER_CALL_IN_FLIGHT":
-            return None, Result("retry", delay_s=rt.lookup_delay_s, error=r.code)
-        return None, _cancel_before_payable(rt, intent_id, r.code)
-    res = rt.provider.create_invoice(payload, key)
-    _finish_op(rt, op_id, res)
+        return None, _refused_before_call(rt, intent_id, r)
+    res = _finish_op(rt, att, rt.provider.create_invoice(payload, att.request_id))
     if res.ok and isinstance(res.body, dict) and res.body.get("id"):
-        return _adopt(rt, intent_id, res.body["id"]), None
+        return _adopt(rt, intent_id, res.body["id"], job), None
     if res.outcome is Outcome.UNKNOWN or res.ok:
-        _mark_unknown(rt, intent_id, "CREATE_OUTCOME_UNKNOWN")
+        _mark_unknown(rt, intent_id, "CREATE_OUTCOME_UNKNOWN", job)
         return None, Result("retry", delay_s=rt.lookup_delay_s, error="CREATE:UNKNOWN")
     if res.outcome is Outcome.RETRYABLE:
         return None, Result("retry", error="CREATE:RETRYABLE")
     # REJECTED / FORBIDDEN / NOT_FOUND: the provider refused before creating anything.
-    return None, _fail_unsent(rt, intent_id, f"CREATE_REJECTED:{res.error_name or res.http_status}")
+    return None, _fail_unsent(
+        rt, intent_id, f"CREATE_REJECTED:{res.error_name or res.http_status}", job
+    )
 
 
-def _adopt(rt: Runtime, intent_id: str, invoice_id: str) -> str:
+def _adopt(rt: Runtime, intent_id: str, invoice_id: str, job: Job | None = None) -> str:
     now = rt.clock()
     with rt.engine.begin() as conn:
+        _fenced(conn, job, now)
         conn.execute(
             update(payment_session)
             .where(
@@ -813,9 +946,15 @@ def observe(rt: Runtime, intent_id: str, body: dict[str, Any], *, polling: bool)
                     at=now,
                 )
         if now >= sess["pay_deadline"]:
-            return request_cancel(rt, intent_id, target=S.EXPIRED, reason="PAY_DEADLINE_PASSED")
+            if rt.auto_cancel:
+                return request_cancel(rt, intent_id, target=S.EXPIRED, reason="PAY_DEADLINE_PASSED")
+            return _needs_review(rt, intent, "PAY_DEADLINE_PASSED_REVIEW", status, polling)
         if not _authority_holds(rt, intent):
-            return request_cancel(rt, intent_id, target=S.CANCELLED, reason="AUTHORIZATION_REVOKED")
+            if rt.auto_cancel:
+                return request_cancel(
+                    rt, intent_id, target=S.CANCELLED, reason="AUTHORIZATION_REVOKED"
+                )
+            return _needs_review(rt, intent, "AUTHORIZATION_REVOKED_REVIEW", status, polling)
         return rearm
     if status == "PAYMENT_PENDING":
         if st is not S.PROVIDER_PENDING:
@@ -857,6 +996,40 @@ def observe(rt: Runtime, intent_id: str, body: dict[str, Any], *, polling: bool)
     return _to_exception(
         rt, intent_id, "UNEXPECTED_PROVIDER_STATUS", {"status": status, "transactions": txns}
     )
+
+
+def _needs_review(
+    rt: Runtime, intent: dict[str, Any], code: str, provider_status: str, polling: bool
+) -> Result:
+    """Automatic cancellation is disabled (the pilot policy): record that an operator must
+    decide, change nothing financial (no cancel call, no release, no state change) and
+    keep reconciling read-only, so a late payment is still booked exactly once."""
+    now = rt.clock()
+    with rt.engine.begin() as conn:
+        inserted = conn.execute(
+            pg_insert(payment_exception)
+            .values(
+                intent_id=intent["intent_id"],
+                code=code,
+                detail={"provider_status": provider_status, "auto_cancel": "disabled"},
+                opened_at=now,
+            )
+            .on_conflict_do_nothing()
+            .returning(payment_exception.c.id)
+        ).first()
+        if inserted is not None:
+            audit.append(
+                conn,
+                at=now,
+                action="payment.needs_review",
+                object_type="payment_intent",
+                object_id=intent["intent_id"],
+                merchant_id=intent["payer_merchant"],
+                detail={"code": code, "provider_status": provider_status},
+            )
+    if not polling:
+        return Result("done", error=code)
+    return Result("rearm", delay_s=rt.poll_s * rt.review_poll_factor, error=code)
 
 
 def _authority_holds(rt: Runtime, intent: dict[str, Any]) -> bool:
@@ -1126,7 +1299,7 @@ def handle_cancel(rt: Runtime, job: Job) -> Result:
             if not rt.execution_enabled():
                 return Result("retry", delay_s=rt.poll_s, error="EXECUTION_DISABLED")
             try:
-                op_id, key = _begin_op(
+                att = _begin_op(
                     rt,
                     job,
                     intent_id,
@@ -1136,9 +1309,10 @@ def handle_cancel(rt: Runtime, job: Job) -> Result:
                     request={"invoice_id": inv_id},
                 )
             except RevalidationError as r:
-                return Result("retry", delay_s=rt.lookup_delay_s, error=r.code)
-            res = rt.provider.cancel_invoice(inv_id, key)
-            _finish_op(rt, op_id, res)
+                if r.code == "PROVIDER_REQUEST_CONFLICT":
+                    return _to_exception(rt, intent_id, r.code, {"problems": [str(r)]})
+                return Result("retry", delay_s=rt.lookup_delay_s, error=r.code)  # incl. done
+            res = _finish_op(rt, att, rt.provider.cancel_invoice(inv_id, att.request_id))
             if res.outcome in (Outcome.UNKNOWN, Outcome.RETRYABLE):
                 return Result(
                     "retry", delay_s=rt.lookup_delay_s, error=f"CANCEL:{res.outcome.value}"

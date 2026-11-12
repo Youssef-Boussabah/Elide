@@ -67,6 +67,7 @@ def build_runtime(
         clock=clock or (lambda: datetime.now(UTC)),
         worker_id=worker_id or f"{socket.gethostname()}:{os.getpid()}",
         poll_s=float(settings.worker_poll_seconds),
+        auto_cancel=settings.auto_cancel_unpaid,
     )
 
 

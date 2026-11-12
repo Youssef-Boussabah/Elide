@@ -1,7 +1,8 @@
 """Prepare a fresh database for browser end-to-end tests (local/test/ci only).
 
 Drops and recreates the `elide_e2e` database on the configured PostgreSQL server,
-migrates it to head, seeds the SYNTHETIC workspace with TEST identities, and writes their
+migrates it to head, seeds the SYNTHETIC workspace and the P5 Sandbox-pilot network
+(bound to the mock provider of `scripts/e2e_app.py`) with TEST identities, and writes their
 generated passwords to the git-ignored `.local/e2e_credentials.json`. Never touches the
 developer's `elide` database and never prints passwords.
 
@@ -46,15 +47,25 @@ def main() -> int:
     cfg.set_main_option("script_location", str(ROOT / "migrations"))
     command.upgrade(cfg, "head")
 
+    from fixtures.e2e_mock import bind_pilot
+    from fixtures.sandbox_pilot import seed_pilot
     from fixtures.workspace_seed import seed
 
     engine = create_engine(url)
-    result = seed(engine, now=datetime.now(UTC))
+    now = datetime.now(UTC)
+    result = seed(engine, now=now)
+    # P5: a non-synthetic pilot network bound to the MOCK provider of scripts/e2e_app.py
+    # (three independent USD 25.00 obligations, buyer capacity attested for the test).
+    pilot = seed_pilot(engine, now=now, obligations=3, attest_buyer=(20000, 5000))
+    bind_pilot(engine, now)
     engine.dispose()
     out = ROOT / ".local" / "e2e_credentials.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(
-        json.dumps({"label": "TEST IDENTITIES (e2e)", "users": result.passwords}), encoding="utf-8"
+        json.dumps(
+            {"label": "TEST IDENTITIES (e2e)", "users": {**result.passwords, **pilot.passwords}}
+        ),
+        encoding="utf-8",
     )
     print(f"e2e database {NAME} ready; credentials in {out}")
     return 0

@@ -272,6 +272,23 @@ export type AuditEvent = {
   event_sha256: string;
 };
 
+/** GET /settlements: each merchant sees only its own side of a reconciled payment. */
+export type Settlement = {
+  role: "payer" | "payee";
+  intent_id: string;
+  capture_id: string;
+  currency?: string;
+  paid_cents?: number;
+  gross_cents?: number;
+  fee_cents?: number;
+  net_cents?: number;
+  credited_cents?: number;
+  credited_currency?: string;
+  receipt_status?: string;
+  usd_deployable_cents?: number;
+  reasons?: string[];
+};
+
 export type PaymentIntent = {
   intent_id: string;
   obligation_id: string;

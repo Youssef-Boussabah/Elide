@@ -5,7 +5,7 @@ import type { PaymentIntent, PlanLeg, PlanSummary, PlanView } from "../api/types
 import { useAuth } from "../auth/AuthContext";
 import { Badge, Card, Empty, ErrorBanner, Field, Loading, Notice, StateLabel } from "../components/ui";
 import { useResource } from "../components/useResource";
-import { IntentRow } from "./Execution";
+import { IntentRow, SettlementsCard } from "./Execution";
 import { href } from "./route";
 import type { PageProps } from "./Shell";
 
@@ -169,6 +169,7 @@ export function PlanPage({ merchant, membership }: PageProps) {
           </>
         )}
       </Card>
+      <SettlementsCard merchant={merchant} />
     </>
   );
 }
