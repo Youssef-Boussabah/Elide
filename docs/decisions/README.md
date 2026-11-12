@@ -16,4 +16,5 @@ ADRs never override frozen decisions D001–D013. A conflict needs an explicit o
 | [ADR-0008](ADR-0008-financial-kernel-design.md) | Phase 1 financial kernel design choices | Accepted |
 | [ADR-0009](ADR-0009-p2-planner-design.md) | Phase 2 planner, verifier and baseline design | Accepted |
 | [ADR-0010](ADR-0010-p3-ai-policy-and-negotiation.md) | Phase 3 AI policy interpretation and bounded negotiation | Accepted (P3 approved and merged `3100091`) |
-| [ADR-0011](ADR-0011-p4-merchant-platform.md) | Phase 4 merchant platform: identity, tenant isolation, durable workflow, consent | Proposed (pending owner review) |
+| [ADR-0011](ADR-0011-p4-merchant-platform.md) | Phase 4 merchant platform: identity, tenant isolation, durable workflow, consent | Accepted (P4 approved `7d971d9`, merged `1ed309a`) |
+| [ADR-0012](ADR-0012-p5-paypal-execution-and-reconciliation.md) | Phase 5 PayPal execution, durable outbox and reconciliation | Proposed (pending owner review) |
