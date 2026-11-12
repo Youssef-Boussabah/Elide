@@ -1145,3 +1145,19 @@ original `cd40638+dirty` provenance.
     approval: restart the pilot API on the reviewed commit in queue mode; the owner releases
     the intent; final pre-dispatch checks; the single authorized invoice. The approval
     expires 2026-11-13T17:11:29Z.
+- 2026-11-12 (Claude Code, Opus 5.5): owner released intent `pin_7452d6099eaf9caf` (state
+  event RELEASED_BY_PAYER 18:13:11Z). Read-only pre-dispatch checks passed
+  (`evidence/phase5/predispatch_20261112T181844Z.json`). CI run #32 on `ec413f5` was green.
+  - **Owner-authorized single dispatch**: one worker pass at 18:18:56Z: OAuth 200; create 201
+    (`INV2-HQXZ-SCNE-RKTV-VMMT`, number `ELIDE-4E480F60A4F8`, request id
+    `elide-pin_7452d6099eaf9caf-create`, debug `f509221afa3c5`); GET 200; send 200 (request id
+    `...-send`, debug `f835284258671`); GET 200.
+  - Intent `payer_action_pending`.
+  - Independent GET (debug `f238450886e15`): SENT; USD 25.00 less 1.00 = 24.00; due
+    2026-11-15; one recipient (approved payer); strict terms comparison clean.
+  - Provider-mutating execution disabled immediately afterwards (pilot API restarted with
+    `PAYMENTS_EXECUTION_ENABLED=false`; no worker running).
+  - The USD 24.00 reservation is intact; no payment yet.
+  - Evidence: `evidence/phase5/dispatch_20261112T181937Z.json` (host name redacted).
+  - **Next task:** the owner pays USD 24.00 in PayPal's hosted page; then read-only
+    reconciliation, independent check and duplicate replay.
