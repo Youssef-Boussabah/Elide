@@ -1107,3 +1107,12 @@ original `cd40638+dirty` provenance.
   PayPal calls: OAuth and a read-only invoice list. The offer expires 2026-11-14T13:13Z.
   **Next task:** wait for explicit owner authorization of the specific operation; then run
   steps A-F of the preflight report. Do not merge P5.
+- 2026-11-12 (Claude Code, Opus 5.5): owner authorized the controlled Sandbox pilot. Bindings
+  created in `elide_sandbox_pilot`; owner attested USD 200 / USD 50 reserve and accepted the
+  USD 1 offer. **Blocker:** the plan was empty. Reproduced read-only
+  (`evidence/phase5/pilot_plan_blocker_2026-11-12.md`, diagnosis JSON). The decisive cause is
+  24 h capacity evidence vs a ~68 h payment window; acceleration has no incremental benefit
+  (2-cent time cost); a latent P2 early-discount semantic defect is pinned as a strict xfail.
+  Correction proposed (R1: attest through the pay-by window, no code change; R2: ADR-0013,
+  Proposed). No PayPal call, worker run, cancellation, reseeding or model call. The pilot
+  API runs with execution off and provider `none`. **Next task:** owner decision on R1/R2.
