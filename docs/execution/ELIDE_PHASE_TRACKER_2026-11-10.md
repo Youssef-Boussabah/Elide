@@ -1116,3 +1116,14 @@ original `cd40638+dirty` provenance.
   Correction proposed (R1: attest through the pay-by window, no code change; R2: ADR-0013,
   Proposed). No PayPal call, worker run, cancellation, reseeding or model call. The pilot
   API runs with execution off and provider `none`. **Next task:** owner decision on R1/R2.
+- 2026-11-12 (Claude Code, Opus 5.5): owner renewed the attestation (72 h), approved the
+  USD 24.00 leg and prepared intent `pin_7452d6099eaf9caf`. It was **held**: the pilot API
+  was still running with execution off. The plan view then showed a false "CONDITIONS
+  CHANGED". Reproduced read-only (`evidence/phase5/pilot_intent_held_and_label_2026-11-12.md`,
+  diagnosis JSON). The view excludes in-execution invoices; under execution-aware
+  revalidation the conditions are unchanged and the verifier is clean. There is no release
+  path for held messages (safe, but missing). Proposed: an `in_execution` view status and a
+  payer release route that reuses `revalidate()`, the same intent and the same commitment;
+  pinned by 3 passing tests and 3 strict xfails. Nothing implemented; no PayPal call, worker
+  run or database change. The approval expires 2026-11-13T17:11Z. **Next task:** owner
+  review of the fix.
