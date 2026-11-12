@@ -1,5 +1,5 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **implemented on `feat/p4-merchant-platform`, pending owner architectural review**; not merged. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 on `feat/p5-paypal-execution`. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
@@ -7,7 +7,7 @@
 | P1 | Money model, reserves, fees, revisions and fixtures pass | **Complete** (owner-approved 2026-11-11; merged `41c0f9f`): 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests; CI run #7 on `main` green | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | **Complete** (owner-approved `dc5949e`, CI run #17; merged `3100091`, CI run #18): real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled development cases; 633 tests pass | Prompt version + schema result + injection tests |
-| P4 | Separate merchant sessions, approvals, permissioned UI | **Implemented, pending review** on `feat/p4-merchant-platform` (see P4 detail): sessions, roles, tenant isolation, durable negotiation and approvals, workspace UI; API and browser workflow verified. Live payment execution remains P5 | E2E run and auth isolation test |
+| P4 | Separate merchant sessions, approvals, permissioned UI | **Complete** (owner-approved `7d971d9`, CI run #21; merged `1ed309a`, CI run #22): 689 backend, 18 frontend, 5 Playwright tests pass; synthetic scope only, outbox held | E2E run and auth isolation test |
 | P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
 | P7 | Public license/repo, working demo, video, submission | Not started | Public links, release SHA, submission receipt |
@@ -822,6 +822,27 @@ ADR-0011 §13; the API contract was updated in `docs/api/P4_WORKSPACE_API.md`.
 | Playwright E2E (local, Chrome) | **5 passed** |
 | PayPal / model / money | none; outbox held; synthetic intents cannot leave the held state |
 
+### P4 approval and merge (2026-11-11)
+
+- The owner approved `7d971d944d75ee4378cf2f0c997348d92af5408e` for its tested synthetic
+  scope. It is **not** an approval of payment execution: no PayPal call, model call or
+  money movement exists in P4, and the outbox stays held.
+- CI on the approved commit: [run #21](https://github.com/Youssef-Boussabah/Elide/actions/runs/43139262883)
+  (backend, frontend, e2e: success).
+- Pre-merge checks: working tree clean; `feat/p4-merchant-platform` = `origin` = the
+  approved SHA; `main` (`3100091`) did not contain it and had no commits it lacked.
+  Local baseline on the approved SHA: ruff clean, `pytest` 689 passed / 0 skipped,
+  frontend typecheck, lint and 18 tests pass.
+- Merge: `git merge --no-ff feat/p4-merchant-platform` into `main` gave
+  **`1ed309a8d6c4d0a32be46b4b4f7d4d6e33a024aa`**. `git diff 7d971d9 1ed309a` is empty: the
+  merged tree is byte-identical to the approved commit. No rebase, squash or history
+  rewrite; the feature branch is kept.
+- [CI run #22](https://github.com/Youssef-Boussabah/Elide/actions/runs/43142637493) on
+  `main`: **success**. Read from the job logs: backend `689 passed, 1 warning`; frontend
+  Vitest 18 passed; e2e Playwright `5 passed`.
+- Preserved unchanged: the PayPal Sandbox receipts, the Nebius evidence, the synthetic
+  benchmarks and the P4 review evidence. No credentials were changed.
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -951,3 +972,8 @@ ADR-0011 §13; the API contract was updated in `docs/api/P4_WORKSPACE_API.md`.
   Added 21 PostgreSQL regressions, 5 jsdom tests and 5 Playwright E2E tests (new CI job);
   the E2E tests found 3 more defects, now fixed. No PayPal or model calls. Not merged.
   **Next task:** owner final review of P4.
+- 2026-11-11 (Claude Code, Opus 5.5): owner approved P4 (`7d971d9`, CI run #21). Merged into
+  `main` with `--no-ff` as `1ed309a` (tree identical to the approved commit); CI run #22 on
+  `main` green (689 / 18 / 5). **Next task:** P5 on `feat/p5-paypal-execution`: ADR-0012,
+  then execution and reconciliation built against a mock provider; no new Sandbox payment
+  without separate owner authorization.
