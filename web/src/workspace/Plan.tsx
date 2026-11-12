@@ -5,6 +5,7 @@ import type { PaymentIntent, PlanLeg, PlanSummary, PlanView } from "../api/types
 import { useAuth } from "../auth/AuthContext";
 import { Badge, Card, Empty, ErrorBanner, Field, Loading, Notice, StateLabel } from "../components/ui";
 import { useResource } from "../components/useResource";
+import { IntentRow } from "./Execution";
 import { href } from "./route";
 import type { PageProps } from "./Shell";
 
@@ -155,18 +156,13 @@ export function PlanPage({ merchant, membership }: PageProps) {
               </thead>
               <tbody>
                 {intents.data?.intents.map((i) => (
-                  <tr key={i.intent_id}>
-                    <td className="font-mono text-xs">{i.intent_id}</td>
-                    <td className="font-mono text-xs">{i.obligation_id}</td>
-                    <td>{i.payee_merchant}</td>
-                    <td>{money(i.amount_cents)}</td>
-                    <td>
-                      <StateLabel state={i.status === "approved" ? "INTENT_CREATED_NOT_SENT" : i.status} />
-                    </td>
-                    <td>
-                      <Badge tone="warn">{i.execution === "disabled" ? "held: no PayPal call" : i.execution}</Badge>
-                    </td>
-                  </tr>
+                  <IntentRow
+                    key={i.intent_id}
+                    intent={i}
+                    merchant={merchant}
+                    canAuthorize={canAuthorize}
+                    onChange={reload}
+                  />
                 ))}
               </tbody>
             </table>

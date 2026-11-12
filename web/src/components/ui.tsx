@@ -41,6 +41,16 @@ const STATE_TONES: Record<string, Tone> = {
   countered: "neutral",
   NOT_STARTED: "neutral",
   INTENT_CREATED_NOT_SENT: "warn",
+  PREPARING_PAYPAL_INVOICE: "warn",
+  AWAITING_PAYER_AT_PAYPAL: "warn",
+  PROVIDER_PENDING: "warn",
+  PROVIDER_OUTCOME_UNKNOWN: "bad",
+  PAYPAL_CONFIRMED_NOT_BOOKED: "good",
+  PAYPAL_CONFIRMED_RECONCILED: "good",
+  FAILED: "bad",
+  EXPIRED: "bad",
+  CANCELLED: "neutral",
+  NEEDS_OPERATOR_REVIEW: "bad",
   NOT_USABLE_UNTIL_VERIFIED: "warn",
 };
 

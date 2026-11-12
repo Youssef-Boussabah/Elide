@@ -1,0 +1,105 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PaymentIntent } from "../api/types";
+import { installFakeBackend } from "../test/fakeBackend";
+import { IntentRow } from "./Execution";
+
+vi.mock("../auth/AuthContext", () => ({
+  useAuth: () => ({ withStepUp: <T,>(fn: () => Promise<T>) => fn() }),
+}));
+
+afterEach(cleanup);
+
+function intent(over: Partial<PaymentIntent>): PaymentIntent {
+  return {
+    intent_id: "pin_1",
+    obligation_id: "pilot_001",
+    payer_merchant: "pilot_buyer",
+    payee_merchant: "pilot_seller",
+    amount_cents: 2400,
+    status: "approved",
+    status_reason: "QUEUED_FOR_PROVIDER",
+    created_at: "2026-11-11T18:00:00Z",
+    execution: "enabled",
+    money_moved: false,
+    provider_confirmed: false,
+    funds_usable: false,
+    ...over,
+  };
+}
+
+function row(i: PaymentIntent, merchant = "pilot_buyer", onChange = () => {}) {
+  render(
+    <table>
+      <tbody>
+        <IntentRow intent={i} merchant={merchant} canAuthorize onChange={onChange} />
+      </tbody>
+    </table>,
+  );
+}
+
+describe("execution states (ADR-0012)", () => {
+  it("explains why an approved intent is held and offers no PayPal action", () => {
+    row(intent({ status_reason: "PROVIDER_NOT_CONNECTED", execution: "disabled" }));
+    expect(screen.getByText("INTENT CREATED NOT SENT")).toBeTruthy();
+    expect(screen.getByText("held: no PayPal call (no PayPal Sandbox account connected)")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open PayPal payment page" })).toBeNull();
+  });
+
+  it("opens PayPal's hosted page fetched on demand, with noopener", async () => {
+    const calls = installFakeBackend((c) =>
+      c.path.endsWith("/payer-link")
+        ? { status: 200, body: { url: "https://www.sandbox.paypal.com/invoice/p/#X" } }
+        : undefined,
+    );
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    row(intent({ status: "payer_action_pending" }));
+    expect(screen.getByText("AWAITING PAYER AT PAYPAL")).toBeTruthy();
+    expect(screen.getByText(/Elide cannot pay for you/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open PayPal payment page" }));
+    await waitFor(() => expect(open).toHaveBeenCalled());
+    expect(open).toHaveBeenCalledWith(
+      "https://www.sandbox.paypal.com/invoice/p/#X",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(calls[0]?.method).toBe("GET");
+  });
+
+  it("never calls a reconciled payment spendable", () => {
+    row(intent({ status: "reconciled", provider_confirmed: true, money_moved: true }));
+    expect(screen.getByText("PAYPAL CONFIRMED RECONCILED")).toBeTruthy();
+    expect(screen.getByText("PayPal-confirmed")).toBeTruthy();
+    expect(screen.getByText("funds usable: no")).toBeTruthy();
+    expect(screen.getByText(/Not spendable funds for the payee/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel payment" })).toBeNull();
+  });
+
+  it("keeps cash reserved while the provider outcome is unknown or under review", () => {
+    row(intent({ status: "provider_unknown" }));
+    expect(screen.getByText("PROVIDER OUTCOME UNKNOWN")).toBeTruthy();
+    expect(screen.getByText(/checking PayPal before doing anything else/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel payment" })).toBeNull();
+  });
+
+  it("offers the payee no payer actions", () => {
+    row(intent({ status: "payer_action_pending" }), "pilot_seller");
+    expect(screen.queryByRole("button", { name: "Open PayPal payment page" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel payment" })).toBeNull();
+  });
+
+  it("cancels only after explicit confirmation, with an idempotency key", async () => {
+    const calls = installFakeBackend((c) =>
+      c.path.endsWith("/cancel") ? { status: 200, body: { status: "cancelled" } } : undefined,
+    );
+    const changed = vi.fn();
+    row(intent({}), "pilot_buyer", changed);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel payment" }));
+    expect(calls).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
+    await waitFor(() => expect(changed).toHaveBeenCalled());
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.headers["Idempotency-Key"]).toMatch(/^op-/);
+  });
+});

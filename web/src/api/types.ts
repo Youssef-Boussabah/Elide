@@ -275,10 +275,14 @@ export type AuditEvent = {
 export type PaymentIntent = {
   intent_id: string;
   obligation_id: string;
+  payer_merchant?: string;
   payee_merchant: string;
   amount_cents: number;
   status: string;
+  status_reason?: string | null;
   created_at: string;
   execution: string;
   money_moved: boolean;
+  provider_confirmed?: boolean;
+  funds_usable?: boolean;
 };
