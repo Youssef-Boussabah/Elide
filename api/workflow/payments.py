@@ -35,9 +35,10 @@ from api.domain.money import USD, Money
 from api.liquidity.capacity import CapacityError, Commitment
 from api.liquidity.store import _current_evidence, reserve_capacity_in
 from api.workflow import audit
+from api.workflow.networks import ACTIVE_INTENT
 from api.workflow.plans import load_snapshot, revalidate_leg
 from api.workflow.store import ConflictError, NotVisibleError
-from api.workflow.tables import outbox_message, payment_authorization, payment_intent
+from api.workflow.tables import obligation, outbox_message, payment_authorization, payment_intent
 
 
 def request_hash(body: dict[str, Any]) -> str:
@@ -110,6 +111,22 @@ def create_payment_intent(
     ).scalar_one_or_none()
     if used is not None:
         raise ConflictError("an intent already exists for this authorization", code="DUPLICATE")
+    # Serialize intents per invoice: one invoice is in execution at most once.
+    conn.execute(
+        select(obligation.c.obligation_id)
+        .where(obligation.c.obligation_id == a["obligation_id"])
+        .with_for_update()
+    )
+    active = conn.execute(
+        select(payment_intent.c.intent_id).where(
+            payment_intent.c.obligation_id == a["obligation_id"],
+            payment_intent.c.status.in_(ACTIVE_INTENT),
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        raise ConflictError(
+            "this invoice already has a payment in execution", code="ALREADY_IN_EXECUTION"
+        )
 
     snap = load_snapshot(conn, a["plan_id"], merchant_id)
     record = snap["record"]

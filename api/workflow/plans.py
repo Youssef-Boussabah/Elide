@@ -215,12 +215,7 @@ def authorize_leg(
         raise NotVisibleError("not found")
     if decision not in ("approve", "decline"):
         raise WorkflowError("decision must be approve or decline", status=422)
-    existing = conn.execute(
-        select(payment_authorization.c.decision).where(
-            payment_authorization.c.plan_id == plan_id,
-            payment_authorization.c.option_id == leg_id,
-        )
-    ).scalar_one_or_none()
+    existing = existing_authorization(conn, plan_id, leg, at)
     if existing is not None:
         raise ConflictError("this leg already has a recorded decision", code="ALREADY_DECIDED")
     # The binding the merchant reviewed must equal the one derivable now.
@@ -279,20 +274,33 @@ def authorize_leg(
     return {"authorization_id": auth_id, "decision": decision, "money_moved": False}
 
 
+def existing_authorization(conn: Connection, plan_id: str, leg: dict[str, Any], at: datetime):
+    """The payer's decision on this leg: in this plan, or an unexpired decision on the
+    identical terms (same option = invoice revision, payer, payee and amount) recorded
+    for an earlier plan. Plans are recomputed on every view (as_of moves), so a decision
+    must survive re-planning while the terms are unchanged; it is still re-validated
+    against current data when a payment intent is created."""
+    pa = payment_authorization.c
+    return conn.execute(
+        select(payment_authorization)
+        .where(
+            pa.option_id == leg["leg_id"],
+            pa.payer_merchant == leg["payer"],
+            pa.payee_merchant == leg["payee"],
+            pa.amount_cents == leg["amount_cents"],
+            (pa.plan_id == plan_id) | (pa.expires_at > at),
+        )
+        .order_by(pa.decided_at.desc())
+        .limit(1)
+    ).first()
+
+
 def plan_view(conn: Connection, record: dict[str, Any], merchant_id: str, at: datetime):
     view = plan_mod.merchant_view(record, merchant_id)
-    auths = {
-        r.option_id: r
-        for r in conn.execute(
-            select(payment_authorization).where(
-                payment_authorization.c.plan_id == record["plan_id"]
-            )
-        )
-    }
     by_leg = {x["leg_id"]: x for x in record["selected_legs"]}
     for leg in view["my_legs"]:
         full = by_leg[leg["leg_id"]]
-        a = auths.get(leg["leg_id"])
+        a = existing_authorization(conn, record["plan_id"], full, at)
         mine_to_pay = full["payer"] == merchant_id
         leg["payment_authorization"] = (
             {

@@ -406,8 +406,8 @@ def draft_counteroffer(body: DraftCounterBody, c: ctx(P.OFFER_PROPOSE)) -> dict[
         counterparty=ob.creditor,
         requester_max_concession=Money(body.max_concession_cents, ob.currency),
     )
-    adapter = getattr(c.request.app.state, "workspace_llm", None) or UnconfiguredLLMAdapter()
-    r = propose_counteroffer(adapter, case)
+    workspace_model = getattr(c.request.app.state, "workspace_llm", None)
+    r = propose_counteroffer(workspace_model or UnconfiguredLLMAdapter(), case)
     return {
         "status": r.status,
         "reason_codes": r.reason_codes,
@@ -416,8 +416,12 @@ def draft_counteroffer(body: DraftCounterBody, c: ctx(P.OFFER_PROPOSE)) -> dict[
         "proposal": r.proposal.model_dump() if r.proposal else None,
         "message_issues": [i.code for i in r.message_issues],
         "requester_view": r.requester_view,
-        "note": r.note
-        or "draft only: nothing is sent, signed or changed until you submit an offer",
+        "note": (
+            "Deterministic bounds only: the workspace makes no model call (no paid inference "
+            "is authorized). Nothing is sent, signed or changed until you submit an offer."
+            if workspace_model is None
+            else r.note or "Draft only: nothing is sent, signed or changed until you submit."
+        ),
         "labels": ["DRAFT_NOT_SENT", "COUNTERPARTY_PRIVATE_RULES_NOT_USED"],
     }
 

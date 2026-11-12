@@ -37,6 +37,9 @@ from api.workflow.store import (
     network_obligation_ids,
 )
 from api.workflow.tables import network as network_table
+from api.workflow.tables import payment_intent
+
+ACTIVE_INTENT = ("awaiting_payer_action", "provider_pending", "unknown")
 
 SLOTS = 31
 SLOT = timedelta(days=1)
@@ -53,6 +56,7 @@ class LoadedNetwork:
     policy_versions: dict[str, int | None]
     planning_assumptions: dict[str, dict[str, Any]]
     inputs: tuple[InvoiceInput, ...] = ()
+    in_execution: frozenset[str] = frozenset()
 
 
 def _no_evidence(merchant_id: str) -> MerchantPosition:
@@ -113,8 +117,18 @@ def load_network(
             )
         )
 
+    # Invoices already in execution (an intent holds their cash) are not planned again:
+    # their reserved cash stays committed, and anything funded by them waits for provider
+    # confirmation and verified availability (D006).
+    executing = set(
+        conn.execute(
+            select(payment_intent.c.obligation_id).where(payment_intent.c.status.in_(ACTIVE_INTENT))
+        ).scalars()
+    )
     invoices = []
     for oid in network_obligation_ids(conn, network_id):
+        if oid in executing:
+            continue
         inv = load_record(conn, oid)
         ob = inv.record.obligation
         if ob.debtor in share and ob.creditor in share and ob.issued_at <= as_of:
@@ -145,6 +159,7 @@ def load_network(
         policy_versions={m: (s.confirmed.version if s else None) for m, s in stored.items()},
         planning_assumptions={m: (s.planning_assumptions if s else {}) for m, s in stored.items()},
         inputs=tuple(invoices),
+        in_execution=frozenset(executing),
     )
 
 

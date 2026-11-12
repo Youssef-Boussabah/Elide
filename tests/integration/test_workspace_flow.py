@@ -16,7 +16,13 @@ from sqlalchemy import select, text
 
 from api.liquidity.store import active_commitment_total
 from api.workflow.audit import verify_chain
-from api.workflow.tables import obligation_revision, offer, outbox_message, payment_intent
+from api.workflow.tables import (
+    obligation_revision,
+    offer,
+    outbox_message,
+    payment_authorization,
+    payment_intent,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -291,32 +297,57 @@ def test_concurrent_acceptance_has_exactly_one_winner(workspace):
 def test_concurrent_plans_cannot_double_spend_the_same_cash(workspace):
     ws = workspace
     buyer, _supplier, _ = _agree(ws)
-    auths = []
-    for i in range(2):  # two plans computed at different times over the same cash
-        data = buyer.get("/v1/m/buyer/opportunities").json()
-        leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "food_001")
-        r = buyer.post(
-            f"/v1/m/buyer/plans/{data['plan']['plan_id']}/authorizations",
-            {
-                "leg_id": leg["leg_id"],
-                "decision": "approve",
-                "binding_digest": leg["authorize"]["binding_digest"],
-            },
-            key=f"k-plan-{i}",
+    data = buyer.get("/v1/m/buyer/opportunities").json()
+    leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "food_001")
+    r = buyer.post(
+        f"/v1/m/buyer/plans/{data['plan']['plan_id']}/authorizations",
+        {
+            "leg_id": leg["leg_id"],
+            "decision": "approve",
+            "binding_digest": leg["authorize"]["binding_digest"],
+        },
+        key="k-plan-0",
+    )
+    assert r.status_code == 200, r.text
+    first = r.json()["authorization_id"]
+    ws.advance(minutes=1)
+    # a later plan over the same cash: the UI and API refuse a second decision on identical
+    # live terms ...
+    data2 = buyer.get("/v1/m/buyer/opportunities").json()
+    assert data2["plan"]["plan_id"] != data["plan"]["plan_id"]
+    leg2 = next(x for x in data2["plan"]["my_legs"] if x["obligation_id"] == "food_001")
+    assert leg2["payment_authorization"]["status"] == "approved"
+    # ... so simulate an approval race that slipped past it, directly in the database
+    with ws.engine.begin() as c:
+        row = dict(
+            c.execute(
+                select(payment_authorization).where(
+                    payment_authorization.c.authorization_id == first
+                )
+            )
+            .mappings()
+            .one()
         )
-        assert r.status_code == 200, r.text
-        auths.append(r.json()["authorization_id"])
-        ws.advance(minutes=1)
+        row.update(
+            authorization_id="pau_race",
+            plan_id=data2["plan"]["plan_id"],
+            binding_digest="f" * 64,
+            operation_key="race",
+        )
+        c.execute(payment_authorization.insert().values(**row))
 
     def go(i):
+        auth_id = (first, "pau_race")[i]
         return buyer.post(
-            "/v1/m/buyer/payment-intents", {"authorization_id": auths[i]}, key=f"pi-race-{i}"
+            "/v1/m/buyer/payment-intents", {"authorization_id": auth_id}, key=f"pi-race-{i}"
         )
 
     with ThreadPoolExecutor(2) as ex:
         results = list(ex.map(go, (0, 1)))
     codes = sorted(r.status_code for r in results)
     assert codes == [200, 409], [r.text for r in results]
+    loser = next(r for r in results if r.status_code == 409)
+    assert loser.json()["detail"]["code"] == "ALREADY_IN_EXECUTION"
     assert active_commitment_total(ws.engine, "buyer") == 99000  # deployable was 990.00
 
 
@@ -375,3 +406,33 @@ def test_audit_trail_is_append_only_and_scoped(workspace):
         assert c.execute(select(payment_intent)).first() is None
         agreed = c.execute(select(offer.c.status).where(offer.c.status == "agreed")).all()
         assert len(agreed) == 1
+
+
+def test_invoice_in_execution_is_not_planned_again(workspace):
+    ws = workspace
+    buyer, _s, _ = _agree(ws)
+    data = buyer.get("/v1/m/buyer/opportunities").json()
+    leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "food_001")
+    auth = buyer.post(
+        f"/v1/m/buyer/plans/{data['plan']['plan_id']}/authorizations",
+        {
+            "leg_id": leg["leg_id"],
+            "decision": "approve",
+            "binding_digest": leg["authorize"]["binding_digest"],
+        },
+        key="k-exec-auth",
+    ).json()
+    pi = buyer.post(
+        "/v1/m/buyer/payment-intents",
+        {"authorization_id": auth["authorization_id"]},
+        key="k-exec-pi1",
+    )
+    assert pi.status_code == 200, pi.text
+    after = buyer.get("/v1/m/buyer/opportunities").json()
+    assert all(x["obligation_id"] != "food_001" for x in after["plan"]["my_legs"])
+    assert all(b["obligation_id"] != "food_001" for b in after["opportunity"]["my_bottlenecks"])
+    overview = buyer.get("/v1/m/buyer/overview").json()
+    food = next(i for i in overview["invoices"] if i["obligation_id"] == "food_001")
+    assert food["payment_state"] == "INTENT_CREATED_NOT_SENT"
+    assert overview["capacity"]["committed_cents"] == 99000
+    assert overview["capacity"]["deployable_cents"] == 0
