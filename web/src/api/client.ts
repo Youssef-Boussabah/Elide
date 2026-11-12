@@ -78,6 +78,13 @@ const HINTS: Record<string, string> = {
   INSUFFICIENT_CAPACITY: "Not enough verified deployable cash after your protected reserve.",
   AUTHORIZATION_REVOKED: "The approving user no longer holds payment authority.",
   RATE_LIMITED: "Too many attempts. Wait a few minutes and try again.",
+  CONDITIONS_CHANGED:
+    "The conditions of this approval changed (policy, reserve, terms, fees or evidence). Approve again on a current plan.",
+  VERIFIER_REJECTED: "The independent verifier rejected this payment under current data.",
+  STALE_PLAN: "Terms, evidence or policies changed since this plan. Re-check and update the plan.",
+  AUTHORIZATION_EXPIRED: "This approval expired. Approve again on a current plan.",
+  ALREADY_IN_EXECUTION: "This invoice already has a payment in execution.",
+  SYNTHETIC_EVIDENCE: "Synthetic evidence can never authorize a payment here.",
   UNAUTHENTICATED: "Your session ended. Sign in again.",
 };
 

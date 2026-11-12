@@ -54,7 +54,7 @@ const OFFER = {
   amendment_authoritative: false,
 };
 
-function leg(termsAgreed: boolean) {
+function leg(termsAgreed: boolean, status = "pending", planCurrent = true) {
   return {
     leg_id: termsAgreed ? "food_001:r4" : "food_001:r3:proposal",
     obligation_id: "food_001",
@@ -69,12 +69,36 @@ function leg(termsAgreed: boolean) {
     on_time: true,
     depends_on: [],
     has_upstream_dependency: false,
-    payment_authorization: { status: "pending" },
-    authorize: { binding_digest: "b".repeat(64), fee_ceiling_cents: 0, expires_at: "2026-11-12T18:00:00Z", terms_agreed: termsAgreed },
+    payment_authorization:
+      status === "needs_reapproval"
+        ? { status, reason: "the conditions this decision was given under have changed" }
+        : { status },
+    authorize: {
+      binding_digest: "b".repeat(64),
+      fee_ceiling_cents: 0,
+      expires_at: "2026-11-12T18:00:00Z",
+      terms_agreed: termsAgreed,
+      plan_current: planCurrent,
+    },
   };
 }
 
-function opportunities(termsAgreed: boolean) {
+function planView(termsAgreed: boolean, status = "pending", planCurrent = true) {
+  return {
+    plan_id: "plan_1",
+    status: "SIMULATED",
+    solver_status: "OPTIMAL",
+    as_of: "2026-11-11T18:00:00Z",
+    expires_at: null,
+    durable: true,
+    my_legs: [leg(termsAgreed, status, planCurrent)],
+    my_benefit: {},
+    aggregates: { status: "SHOWN", explanation: "" },
+    execution: { may_execute: false, reason: "SIMULATED" },
+  };
+}
+
+function opportunities(termsAgreed: boolean, withheld = false) {
   return {
     as_of: "2026-11-11T18:00:00Z",
     network_id: "n",
@@ -89,24 +113,40 @@ function opportunities(termsAgreed: boolean) {
       my_negotiation_hints: [],
       my_flags: [],
       conditions: [],
+      aggregates: withheld
+        ? { status: "WITHHELD_NO_CONSENT", explanation: "network figures are withheld: not every participant has agreed" }
+        : { status: "SHOWN", explanation: "" },
+      ...(withheld
+        ? { decision: { my_part_in_plan: true, my_net_benefit_cents: 370, my_payments_to_approve: 1 } }
+        : {
+            comparison: {
+              incremental_vs_B0: "170000",
+              incremental_vs_B1: "0",
+              incremental_vs_B3: "0",
+              gross_flow_cents: "269000",
+            },
+          }),
     },
-    plan: {
-      plan_id: "plan_1",
-      status: "SIMULATED",
-      solver_status: "OPTIMAL",
-      expires_at: null,
-      my_legs: [leg(termsAgreed)],
-      my_benefit: {},
-      downstream_legs_count: 2,
-      execution: { may_execute: false, reason: "SIMULATED" },
-    },
+    plan_preview: { ...planView(termsAgreed), durable: false },
     explanation: { status: "TEMPLATE", text: "", facts: [{ id: "F1", text: "This analysis is a SIMULATION." }] },
   };
 }
 
-function backend(opts: { signedIn?: boolean; stepUpFirst?: boolean; termsAgreed?: boolean; role?: string } = {}) {
+type Opts = {
+  signedIn?: boolean;
+  stepUpFirst?: boolean;
+  termsAgreed?: boolean;
+  role?: string;
+  authStatus?: string;
+  planCurrent?: boolean;
+  hasPlan?: boolean;
+  withheld?: boolean;
+};
+
+function backend(opts: Opts = {}) {
   let signedIn = opts.signedIn ?? true;
   let stepUpNeeded = opts.stepUpFirst ?? false;
+  let hasPlan = opts.hasPlan ?? true;
   const session = {
     ...SESSION,
     memberships: SESSION.memberships.map((m) =>
@@ -129,7 +169,23 @@ function backend(opts: { signedIn?: boolean; stepUpFirst?: boolean; termsAgreed?
       if (stepUpNeeded) return { status: 401, body: { detail: { code: "REAUTH_REQUIRED", message: "confirm" } } };
       return { status: 200, body: { status: "agreed" } };
     }
-    if (c.path === "/v1/m/buyer/opportunities") return { status: 200, body: opportunities(opts.termsAgreed ?? true) };
+    if (c.path === "/v1/m/buyer/opportunities")
+      return { status: 200, body: opportunities(opts.termsAgreed ?? true, opts.withheld ?? false) };
+    if (c.path === "/v1/m/buyer/plans" && c.method === "POST") {
+      const reused = hasPlan;
+      hasPlan = true;
+      return { status: 200, body: { plan: planView(opts.termsAgreed ?? true), reused, replayed: false } };
+    }
+    if (c.path === "/v1/m/buyer/plans")
+      return {
+        status: 200,
+        body: { plans: hasPlan ? [{ plan_id: "plan_1", created_at: "", as_of: "", solver_status: "OPTIMAL" }] : [] },
+      };
+    if (c.path === "/v1/m/buyer/plans/plan_1")
+      return {
+        status: 200,
+        body: planView(opts.termsAgreed ?? true, opts.authStatus ?? "pending", opts.planCurrent ?? true),
+      };
     if (c.path === "/v1/m/buyer/payment-intents") return { status: 200, body: { intents: [] } };
     return undefined;
   });
@@ -210,5 +266,52 @@ describe("merchant workspace", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("HTTP 503");
     await waitFor(() => expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy());
+  });
+
+  it("never writes on viewing opportunities and creates plans only on an explicit POST", async () => {
+    window.location.hash = "#/m/buyer/plan";
+    const calls = backend({ hasPlan: false });
+    render(<App />);
+    const user = userEvent.setup();
+    expect(await screen.findByText("No durable plan yet.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Create plan for approval" }));
+    expect(await screen.findByText(/new plan was computed, independently verified/)).toBeTruthy();
+    const posts = calls.filter((c) => c.method === "POST" && c.path === "/v1/m/buyer/plans");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.headers["Idempotency-Key"]).toBeTruthy();
+    expect(posts[0]?.headers["X-CSRF-Token"]).toBe("csrf-abc");
+    const reads = calls.filter((c) => c.path === "/v1/m/buyer/opportunities");
+    expect(reads.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it.each([
+    ["expired", "APPROVAL EXPIRED", /approval expired and is no longer valid/],
+    ["needs_reapproval", "CONDITIONS CHANGED: RE-APPROVE", /conditions this decision was given under have changed/],
+  ])("shows an %s approval as not active", async (status, label, text) => {
+    window.location.hash = "#/m/buyer/plan";
+    backend({ authStatus: status });
+    render(<App />);
+    expect(await screen.findByText(label)).toBeTruthy();
+    expect(screen.getByText(text)).toBeTruthy();
+    expect(screen.queryByText("APPROVED")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Prepare payment intent" })).toBeNull();
+  });
+
+  it("offers no decision on a plan whose economic inputs changed", async () => {
+    window.location.hash = "#/m/buyer/plan";
+    backend({ planCurrent: false });
+    render(<App />);
+    expect(await screen.findByText(/changed since this plan was computed/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve my payment…" })).toBeNull();
+  });
+
+  it("shows only the merchant's own figures when aggregates are withheld", async () => {
+    window.location.hash = "#/m/buyer/opportunities";
+    backend({ withheld: true });
+    render(<App />);
+    expect(await screen.findByText(/network figures are withheld/)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Matched-baseline comparison" })).toBeNull();
+    expect(screen.getByText("Your payments to approve")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("1,700");
   });
 });

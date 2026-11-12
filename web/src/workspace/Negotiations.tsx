@@ -13,6 +13,12 @@ type Decision = "accept" | "reject" | "counter" | "withdraw";
 export function Negotiations({ merchant, membership }: PageProps) {
   const r = useResource<{ offers: Offer[] }>(`/v1/m/${merchant}/offers`);
   const canDecide = membership.permissions.includes("offer:decide");
+  // Page-level confirmation: a decided offer leaves the open list, so its card unmounts.
+  const [notice, setNotice] = useState<string | null>(null);
+  const changed = (message?: string) => {
+    if (message) setNotice(message);
+    r.reload();
+  };
   if (r.loading && !r.data) return <Loading />;
   if (r.error) return <ErrorBanner message={r.error} onRetry={r.reload} />;
   const offers = r.data?.offers ?? [];
@@ -20,6 +26,11 @@ export function Negotiations({ merchant, membership }: PageProps) {
   const closed = offers.filter((o) => o.status !== "proposed");
   return (
     <>
+      {notice && (
+        <p role="status" className="rounded-md bg-emerald-50 px-4 py-2 text-sm text-emerald-900 ring-1 ring-emerald-200">
+          {notice}
+        </p>
+      )}
       <Notice tone="neutral">
         Each party decides independently from its own session. An agreed amendment changes the
         invoice terms only; it authorizes no payment. Payment approval is a separate step.
@@ -30,7 +41,7 @@ export function Negotiations({ merchant, membership }: PageProps) {
         ) : (
           <div className="space-y-4">
             {open.map((o) => (
-              <OfferCard key={o.offer_id} offer={o} merchant={merchant} canDecide={canDecide} onChange={r.reload} />
+              <OfferCard key={o.offer_id} offer={o} merchant={merchant} canDecide={canDecide} onChange={changed} />
             ))}
           </div>
         )}
@@ -83,12 +94,11 @@ function OfferCard({
   offer: Offer;
   merchant: string;
   canDecide: boolean;
-  onChange: () => void;
+  onChange: (message?: string) => void;
 }) {
   const { withStepUp } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
   const [countering, setCountering] = useState(false);
   const iPay = o.my_role === "debtor";
 
@@ -104,8 +114,7 @@ function OfferCard({
           operationKey: key,
         }),
       );
-      setDone(`Recorded: ${res.status}.`);
-      onChange();
+      onChange(`Recorded: ${res.status}.`);
     } catch (err) {
       setError(explain(err));
     } finally {
@@ -144,13 +153,8 @@ function OfferCard({
       </p>
       {error && (
         <div className="mt-3">
-          <ErrorBanner message={error} onRetry={onChange} />
+          <ErrorBanner message={error} onRetry={() => onChange()} />
         </div>
-      )}
-      {done && (
-        <p role="status" className="mt-3 text-sm text-emerald-800">
-          {done}
-        </p>
       )}
       {canDecide && (o.can_decide || o.can_withdraw) && !countering && (
         <div className="mt-4 flex flex-wrap gap-2">

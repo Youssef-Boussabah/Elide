@@ -63,9 +63,9 @@ export function Opportunities({ merchant }: PageProps) {
               Open negotiations
             </a>
           )}
-          {d.plan.my_legs.length > 0 && (
+          {d.plan_preview.my_legs.length > 0 && (
             <a className="btn-secondary" href={href(merchant, "plan")}>
-              Review plan & approvals
+              Create a plan for approval
             </a>
           )}
         </div>
@@ -73,16 +73,24 @@ export function Opportunities({ merchant }: PageProps) {
 
       {o.decision && (
         <Card title="Decision breakdown">
-          <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <Field label="Feasible (verified plan)">{o.decision.feasible ? "Yes" : "No"}</Field>
-            <Field label="Your modeled net benefit">{money(o.decision.buyer_net_benefit_cents)}</Field>
-            <Field label="Participants with undeclared losses">
-              {o.decision.participants_with_undeclared_losses}
-            </Field>
-            <Field label="Approvals recorded / required">
-              {o.decision.consent.approvals_recorded} / {o.decision.consent.approvals_required}
-            </Field>
-          </dl>
+          {o.decision.feasible !== undefined ? (
+            <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Field label="Feasible (verified plan)">{o.decision.feasible ? "Yes" : "No"}</Field>
+              <Field label="Your modeled net benefit">{money(o.decision.buyer_net_benefit_cents)}</Field>
+              <Field label="Participants with undeclared losses">
+                {o.decision.participants_with_undeclared_losses}
+              </Field>
+              <Field label="Approvals recorded / required">
+                {o.decision.consent?.approvals_recorded} / {o.decision.consent?.approvals_required}
+              </Field>
+            </dl>
+          ) : (
+            <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+              <Field label="Your part in the plan">{o.decision.my_part_in_plan ? "Yes" : "None"}</Field>
+              <Field label="Your modeled net benefit">{money(o.decision.my_net_benefit_cents)}</Field>
+              <Field label="Your payments to approve">{o.decision.my_payments_to_approve ?? 0}</Field>
+            </dl>
+          )}
         </Card>
       )}
 

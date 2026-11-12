@@ -110,12 +110,16 @@ export type OpportunityView = {
   my_negotiation_hints: Hint[];
   my_flags: Flag[];
   conditions: string[];
+  // Network-level decision (only when aggregates are disclosed) or the merchant's own.
   decision?: {
-    feasible: boolean;
-    advantage: Record<string, unknown>;
-    buyer_net_benefit_cents: number;
-    participants_with_undeclared_losses: number;
-    consent: { approvals_required: number; approvals_recorded: number };
+    feasible?: boolean;
+    advantage?: Record<string, unknown>;
+    buyer_net_benefit_cents?: number;
+    participants_with_undeclared_losses?: number;
+    consent?: { approvals_required: number; approvals_recorded: number };
+    my_part_in_plan?: boolean;
+    my_net_benefit_cents?: number | null;
+    my_payments_to_approve?: number;
   };
   comparison?: Record<string, string>;
   aggregates?: { status: string; explanation?: string };
@@ -131,20 +135,22 @@ export type PlanLeg = {
   slot_start: string;
   amount_cents: number;
   concession_cents: number;
-  payer_fee_cents: number;
+  payer_fee_cents?: number;
   on_time: boolean;
   depends_on: string[];
-  has_upstream_dependency: boolean;
-  payment_authorization: {
-    status: string;
+  has_upstream_dependency?: boolean;
+  payment_authorization?: {
+    status: "pending" | "approved" | "declined" | "expired" | "needs_reapproval" | string;
     authorization_id?: string | null;
     expires_at?: string;
+    reason?: string;
   };
   authorize?: {
     binding_digest: string;
     fee_ceiling_cents: number;
     expires_at: string;
     terms_agreed: boolean;
+    plan_current: boolean;
   };
 };
 
@@ -152,19 +158,24 @@ export type PlanView = {
   plan_id: string;
   status: string;
   solver_status: string;
+  as_of: string;
   expires_at: string | null;
+  durable: boolean;
   my_legs: PlanLeg[];
   my_benefit: Record<string, number>;
-  downstream_legs_count: number;
+  other_legs_in_plan?: number;
+  aggregates: { status: string; explanation: string };
   execution: { may_execute: boolean; reason: string };
 };
+
+export type PlanSummary = { plan_id: string; created_at: string; as_of: string; solver_status: string };
 
 export type Opportunities = {
   as_of: string;
   network_id: string;
   labels: string[];
   opportunity: OpportunityView;
-  plan: PlanView;
+  plan_preview: PlanView;
   explanation: { status: string; text: string; facts: Array<{ id: string; text: string }> };
 };
 
@@ -234,6 +245,7 @@ export type PolicyDraft = {
   };
   proposed: PolicyRules | null;
   digest: string | null;
+  confirmed_revision: number | null;
   active: false;
 };
 

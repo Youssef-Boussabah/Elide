@@ -166,7 +166,7 @@ function DraftCard({ draft: d, merchant, canEdit, onChange }: { draft: PolicyDra
   const { withStepUp } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const ready = d.status === "READY_FOR_CONFIRMATION" && d.digest !== null;
+  const ready = d.status === "READY_FOR_CONFIRMATION" && d.digest !== null && !d.confirmed_revision;
   const confirm = async () => {
     setBusy(true);
     setError(null);
@@ -183,7 +183,11 @@ function DraftCard({ draft: d, merchant, canEdit, onChange }: { draft: PolicyDra
     <article aria-label={`Policy draft ${d.draft_id}`} className="rounded-md border border-slate-200 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm italic">“{d.text}”</p>
-        <Badge tone={ready ? "good" : "warn"}>{d.status.replaceAll("_", " ")}</Badge>
+        {d.confirmed_revision ? (
+          <Badge tone="good">confirmed as revision {d.confirmed_revision}</Badge>
+        ) : (
+          <Badge tone={ready ? "good" : "warn"}>{d.status.replaceAll("_", " ")}</Badge>
+        )}
       </div>
       {d.proposed && (
         <div className="mt-2">
