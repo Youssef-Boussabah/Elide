@@ -36,8 +36,16 @@ class Settings(BaseSettings):
     session_idle_minutes: int = Field(default=30, ge=1, le=240)
     session_absolute_hours: int = Field(default=8, ge=1, le=24)
     step_up_minutes: int = Field(default=10, ge=1, le=60)
-    # No P4 component dispatches payments; P5 enables this only after owner authorization.
+    # Kill switch for provider-MUTATING calls (create/send/cancel invoice). With it off the
+    # worker still reconciles (read-only GETs), as doc 08/11 require. P5 turns it on only
+    # for an owner-authorized Sandbox operation.
     payments_execution_enabled: bool = False
+    # Which provider the worker and the payer-link route use (ADR-0012). "none": nothing is
+    # dispatched. "mock": in-memory double, refused in production. "paypal_sandbox": the
+    # Sandbox REST API with the credentials below.
+    payment_provider: Literal["none", "mock", "paypal_sandbox"] = "none"
+    worker_poll_seconds: int = Field(default=60, ge=5, le=3600)
+    worker_lease_seconds: int = Field(default=120, ge=30, le=3600)
 
     # PayPal: Sandbox only. There is deliberately no live/production setting.
     paypal_client_id: SecretStr | None = None

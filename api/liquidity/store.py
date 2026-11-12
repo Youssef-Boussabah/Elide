@@ -53,7 +53,21 @@ def save_evidence(engine: Engine, ev: CapacityEvidence) -> None:
     """Insert immutable evidence. Re-saving identical evidence is a no-op; the same id with
     other content, or another observation of the same balance at the same instant, raises
     `EvidenceConflictError`."""
-    values = {
+    values = _evidence_values(ev)
+    try:
+        with engine.begin() as conn:
+            _save_evidence(conn, ev, values)
+    except IntegrityError as exc:
+        if "uq_capacity_evidence_observation" in str(exc.orig):
+            raise EvidenceConflictError(
+                f"{ev.merchant_id} already has a {ev.currency} observation at "
+                f"{ev.observed_at.isoformat()}"
+            ) from exc
+        raise
+
+
+def _evidence_values(ev: CapacityEvidence) -> dict:
+    return {
         "evidence_id": ev.evidence_id,
         "merchant_id": ev.merchant_id,
         "currency": ev.currency,
@@ -71,21 +85,30 @@ def save_evidence(engine: Engine, ev: CapacityEvidence) -> None:
         "included_receipt_ids": sorted(ev.included_receipt_ids),
         "included_outflow_ids": sorted(ev.included_outflow_ids),
     }
+
+
+def _save_evidence(conn: Connection, ev: CapacityEvidence, values: dict) -> list[str]:
+    inserted = conn.execute(
+        insert(capacity_evidence)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=["evidence_id"])
+        .returning(capacity_evidence.c.evidence_id)
+    ).first()
+    if inserted is None:
+        if _load_evidence(conn, ev.evidence_id) != ev:
+            raise EvidenceConflictError(
+                f"evidence {ev.evidence_id} already exists with other values"
+            )
+        return []
+    # P5: a newer observation that lists settled outflows releases exactly those.
+    return release_reflected_outflows_in(conn, ev)
+
+
+def save_evidence_in(conn: Connection, ev: CapacityEvidence) -> list[str]:
+    """`save_evidence` in the caller's transaction; returns the outflows it released."""
     try:
-        with engine.begin() as conn:
-            inserted = conn.execute(
-                insert(capacity_evidence)
-                .values(**values)
-                .on_conflict_do_nothing(index_elements=["evidence_id"])
-                .returning(capacity_evidence.c.evidence_id)
-            ).first()
-            if inserted is None and _load_evidence(conn, ev.evidence_id) != ev:
-                raise EvidenceConflictError(
-                    f"evidence {ev.evidence_id} already exists with other values"
-                )
-            if inserted is not None:
-                # P5: a newer observation that lists settled outflows releases exactly those.
-                release_reflected_outflows_in(conn, ev)
+        with conn.begin_nested():
+            return _save_evidence(conn, ev, _evidence_values(ev))
     except IntegrityError as exc:
         if "uq_capacity_evidence_observation" in str(exc.orig):
             raise EvidenceConflictError(

@@ -60,6 +60,10 @@ class EntryKind(StrEnum):
     PROVIDER_SETTLEMENT = "provider_settlement"
     SYNTHETIC_TRANSFER = "synthetic_transfer"
     REVERSAL = "reversal"
+    # P5 payer books (ADR-0012 §7.3): the payable the payer recognized, and the provider-
+    # verified payment that discharged it.
+    PAYABLE_RECOGNIZED = "payable_recognized"
+    PROVIDER_PAYMENT_SENT = "provider_payment_sent"
 
 
 @dataclass(frozen=True, slots=True)

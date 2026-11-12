@@ -132,6 +132,17 @@ def post_entries(engine: Engine, entries: Sequence[JournalEntry]) -> tuple[PostR
         raise
 
 
+def post_entries_in(conn: Connection, entries: Sequence[JournalEntry]) -> tuple[PostResult, ...]:
+    """`post_entries` inside the caller's transaction (P5: the journal bundle, settlement
+    events, settlement record, commitment change and intent state commit together). Any
+    conflict raises and the caller's whole transaction rolls back."""
+    entries = tuple(entries)
+    keys = [e.idempotency_key for e in entries]
+    if not entries or len(set(keys)) != len(keys):
+        raise JournalError("a bundle needs distinct idempotency keys")
+    return tuple(_post(conn, e) for e in entries)
+
+
 def bundle_status(engine: Engine, entries: Sequence[JournalEntry]) -> BundleStatus:
     """Is this bundle completely booked? Derived from the journal rows and digests."""
     expected = {e.idempotency_key: e.content_digest() for e in entries}

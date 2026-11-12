@@ -28,6 +28,8 @@ from api.app.auth.permissions import Permission as P  # noqa: N817
 from api.app.auth.tables import app_user, membership, merchant_org
 from api.config import get_settings
 from api.domain.money import Money
+from api.execution import views as exec_views
+from api.execution.runtime import payer_email_resolver
 from api.negotiation.counteroffer import NegotiationCase, propose_counteroffer
 from api.negotiation.explain import narrate
 from api.opportunities.analysis import facts
@@ -584,6 +586,120 @@ def _execution_enabled(c: MerchantCtx) -> bool:
 def list_intents(c: Read) -> dict[str, Any]:
     with c.engine.begin() as conn:
         return {"intents": payments.intents_for(conn, c.merchant_id)}
+
+
+# --- P5 execution (ADR-0012 §8, §9) ---------------------------------------------------------
+@router.get("/payment-intents/{intent_id}")
+def intent_detail(intent_id: str, c: Read) -> dict[str, Any]:
+    with c.engine.connect() as conn:
+        return exec_views.intent_detail(conn, c.merchant_id, intent_id)
+
+
+def _payer_email(c: MerchantCtx) -> str | None:
+    override = getattr(c.request.app.state, "payer_email", None)
+    if override is not None:
+        return override()
+    return payer_email_resolver(get_settings())()
+
+
+@router.get("/payment-intents/{intent_id}/payer-link")
+def payer_link(intent_id: str, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True)) -> JSONResponse:
+    """The PayPal-hosted payer page, fetched by GET now; never stored or cached."""
+    with c.engine.begin() as conn:
+        url = exec_views.payer_link(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            provider=getattr(c.request.app.state, "payment_provider", None),
+            payer_email=_payer_email(c),
+            at=c.now,
+        )
+    return JSONResponse(
+        {
+            "intent_id": intent_id,
+            "url": url,
+            "host": "www.sandbox.paypal.com",
+            "note": "PayPal Sandbox hosted page; you approve the payment at PayPal, not in Elide",
+        },
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
+@router.post("/payment-intents/{intent_id}/cancel")
+def cancel_intent(
+    intent_id: str, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True), key: IdemKey = None
+) -> dict[str, Any]:
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return exec_views.cancel(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            at=c.now,
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route=f"intents.cancel:{intent_id}",
+        body={},
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
+
+
+class AttestBody(_Body):
+    verified_spendable_cents: int = Field(ge=0, le=10**12)
+    protected_reserve_cents: int = Field(ge=0, le=10**12)
+    valid_hours: int = Field(default=24, ge=1, le=72)
+    included_receipt_ids: list[str] = Field(default_factory=list, max_length=50)
+    included_outflow_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+@router.post("/capacity-evidence")
+def attest_capacity(
+    body: AttestBody, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True), key: IdemKey = None
+) -> dict[str, Any]:
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return exec_views.attest_capacity(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            spendable_cents=body.verified_spendable_cents,
+            reserve_cents=body.protected_reserve_cents,
+            valid_hours=body.valid_hours,
+            included_receipt_ids=body.included_receipt_ids,
+            included_outflow_ids=body.included_outflow_ids,
+            at=c.now,
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route="capacity.attest",
+        body=body.model_dump(mode="json"),
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
+
+
+@router.get("/settlements")
+def list_settlements(c: Read) -> dict[str, Any]:
+    with c.engine.connect() as conn:
+        return {"settlements": exec_views.settlements_for(conn, c.merchant_id)}
 
 
 # --- policy --------------------------------------------------------------------------------

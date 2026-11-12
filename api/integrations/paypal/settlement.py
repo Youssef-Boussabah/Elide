@@ -58,8 +58,18 @@ def settlement_from_runs(
         raise SettlementEvidenceError("evidence runs must be Sandbox runs")
     inv_rec = _record(invoice_run, "fetch")
     cap_rec = _record(capture_run, "payment")
-    inv, cap = inv_rec["response_redacted"], cap_rec["response_redacted"]
+    inv_ref = f"evidence/paypal-sandbox/runs/{invoice_run['run_id']}.json"
+    cap_ref = f"evidence/paypal-sandbox/runs/{capture_run['run_id']}.json"
+    return settlement_from_bodies(
+        inv_rec["response_redacted"], cap_rec["response_redacted"], inv_ref, cap_ref
+    )
 
+
+def settlement_from_bodies(
+    inv: dict[str, Any], cap: dict[str, Any], inv_ref: str, cap_ref: str
+) -> ProviderSettlement:
+    """The same strict construction from two provider GET bodies (P5 live reconciliation);
+    `inv_ref`/`cap_ref` name where those bodies came from (evidence file or operation)."""
     if cap.get("invoice_id") != inv.get("id"):
         raise SettlementEvidenceError("capture does not belong to this invoice")
     txns = (inv.get("payments") or {}).get("transactions") or []
@@ -84,8 +94,6 @@ def settlement_from_runs(
         except (KeyError, InvalidOperation) as exc:
             raise SettlementEvidenceError(f"unreadable exchange rate: {exc}") from exc
 
-    inv_ref = f"evidence/paypal-sandbox/runs/{invoice_run['run_id']}.json"
-    cap_ref = f"evidence/paypal-sandbox/runs/{capture_run['run_id']}.json"
     timestamps = (
         ProviderTimestamp(
             "capture.create_time",
