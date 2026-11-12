@@ -122,6 +122,29 @@ def test_explain_fresh_and_stale_plans(client):
 
 
 def test_no_confirmation_or_payment_endpoints_exist(client):
+    """The unauthenticated P3 demo surface can never confirm, approve, sign or pay. Since
+    P4, those actions exist only under the authenticated, merchant-scoped `/v1/m/...`."""
     paths = set(client.app.openapi()["paths"])
-    assert not any(("confirm" in p or "pay" in p or "approve" in p or "sign" in p) for p in paths)
-    assert all(p.startswith(("/health", "/v1/demo/")) for p in paths)
+    demo = [p for p in paths if p.startswith("/v1/demo/")]
+    assert demo
+    assert not any(("confirm" in p or "pay" in p or "approve" in p or "sign" in p) for p in demo)
+    allowed = ("/health", "/v1/demo/", "/v1/auth/", "/v1/m/{merchant_id}/")
+    assert all(p.startswith(allowed) or p == "/v1/provider/paypal/webhook" for p in paths)
+
+
+def test_every_merchant_route_requires_a_session(client):
+    """No P4 workspace route answers without an authenticated session (401 before any
+    database access or merchant lookup)."""
+    spec = client.app.openapi()["paths"]
+    checked = 0
+    for path, ops in spec.items():
+        if not path.startswith("/v1/m/"):
+            continue
+        url = path.replace("{merchant_id}", "buyer")
+        for name in ("{offer_id}", "{plan_id}", "{draft_id}", "{user_id}", "{obligation_id}"):
+            url = url.replace(name, "x")
+        for method in ops:
+            r = client.request(method.upper(), url, json={})
+            assert r.status_code == 401, (method, path, r.status_code)
+            checked += 1
+    assert checked >= 15

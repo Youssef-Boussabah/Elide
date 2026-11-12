@@ -6,7 +6,10 @@ from alembic import context
 from sqlalchemy import create_engine, pool
 
 import api.accounting.tables
-import api.liquidity.tables  # noqa: F401
+import api.ai.spend_tables
+import api.app.auth.tables
+import api.liquidity.tables
+import api.workflow.tables  # noqa: F401
 from api.config import get_settings
 from api.db import Base
 

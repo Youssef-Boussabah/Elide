@@ -19,6 +19,7 @@ de-duplicated and checked by the pure engine.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime
 
 from sqlalchemy import Connection, Engine, func, select, text
@@ -177,11 +178,43 @@ def reserve_capacity(
     receipts: Iterable[IncomingReceipt] = (),
     allow_synthetic: bool = False,
 ) -> Commitment:
+    with engine.begin() as conn:
+        return reserve_capacity_in(
+            conn,
+            evidence_id=evidence_id,
+            commitment=commitment,
+            at=at,
+            receipts=receipts,
+            allow_synthetic=allow_synthetic,
+        )
+
+
+def reserve_capacity_in(
+    conn: Connection,
+    *,
+    evidence_id: str,
+    commitment: Commitment,
+    at: datetime,
+    receipts: Iterable[IncomingReceipt] = (),
+    allow_synthetic: bool = False,
+    min_protected_reserve_cents: int = 0,
+) -> Commitment:
+    """`reserve_capacity` inside the caller's transaction (P4: a payment intent and its
+    cash reservation commit or roll back together). Same lock, checks and insert.
+
+    `min_protected_reserve_cents` is the merchant's current confirmed policy floor: the
+    reserve that must hold is max(evidence reserve, policy floor), so a newer confirmed
+    restriction can never be bypassed by an older plan or authorization."""
     try:
-        with engine.begin() as conn:
+        with conn.begin_nested():
             _lock_merchant(conn, commitment.merchant_id)
             ev = _load_evidence(conn, evidence_id)
             _require_current(conn, ev, at)
+            if min_protected_reserve_cents > ev.protected_reserve.cents:
+                ev = replace(
+                    ev,
+                    protected_reserve=Money(min_protected_reserve_cents, ev.currency),
+                )
             existing = _active_commitments(conn, commitment.merchant_id)
             commit_capacity(
                 ev,
