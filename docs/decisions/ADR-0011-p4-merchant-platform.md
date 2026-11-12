@@ -208,3 +208,26 @@ Aggregate network figures go to the initiator only under two conditions; otherwi
 - New dependency: `argon2-cffi`.
 - The P3 demo routes remain loopback-only and unauthenticated *demo* endpoints over fixtures. The authenticated `/v1/m/...` routes are the product surface.
 - **Not claimed:** legally binding electronic signatures. Decisions are authenticated, auditable application evidence only.
+
+## 12. Implementation addendum (2026-11-11)
+
+Implemented as designed above, with these decisions taken during implementation:
+
+1. **CSRF token derivation.** The synchronizer token is `HMAC-SHA256(session token, "elide-csrf-v1")`, not a random value. Every tab of one session therefore gets the same token after a reload, and only its SHA-256 is stored. A cross-site page cannot compute it, because the session token is HttpOnly. This is the OWASP HMAC-based token pattern.
+2. **Offers are signed by their proposer.** Creating an offer or counter records the proposer's own acceptance, so the proposer needs `offer:propose` + `offer:decide` and a recent step-up. The P1 DRAFT carries `authorized_by = {proposer}`. A withdrawal is a REJECTED revision by the proposer; no second decision row is written, because the proposer has already decided.
+3. **The pay-by date is the amended due date.** An accepted early-payment offer becomes AUTHORIZED terms "pay `cash` by `pay_by`" (`expires_at ≤ pay_by ≤ current due date`; never later, so no credit is extended). The P2 planner then treats paying by that date as on time.
+4. **Synthetic evidence lasts 7 days in the seed.** With 24-hour evidence, the agreed pay-by date fell outside the fundable window, and the planner, correctly, called a payment today "early". The seed now uses 7-day synthetic evidence (labelled). Real evidence keeps whatever validity its provenance supports.
+5. **Re-planning.** `GET /opportunities` re-plans at request time, so plan ids change as `as_of` moves.
+   - A payer's decision is shown, and enforced as the one decision, for identical live terms (same option = invoice revision, payer, payee, amount) across plans until it expires.
+   - The intent path re-validates against current data regardless of which plan the decision came from.
+   - Found in the browser check; a regression test was added.
+6. **Invoices in execution.** An invoice with an active payment intent is not planned again: its reserved cash stays committed and dependent payments wait for provider confirmation and verified availability. Found in the browser check; a regression test was added.
+7. **P3 contract test.** `test_no_confirmation_or_payment_endpoints_exist` now asserts the property it protected: the unauthenticated demo surface still has no confirm, approve, sign or pay route. It is joined by a sweep showing every `/v1/m/...` route answers `401` without a session.
+8. **No model in the workspace.** The workspace makes no model calls. Narration uses the deterministic template, counteroffer help returns deterministic bounds, and policy drafting without fields reports `MODEL_UNAVAILABLE`. A workspace model must be explicitly attached (`app.state.workspace_llm`) and authorized by the owner.
+
+**Not done in P4 (by design or deferred):**
+- MFA and an OIDC identity provider. Session issuance is the seam for adding them.
+- Membership granting through the UI; seed and scripts only.
+- Settlement events persisted from provider receipts (P5).
+- An outbox worker, the PayPal verify-signature call, and the payer-hosted session (P5, needing owner authorization for the final Sandbox payment).
+- Playwright end-to-end tests. Browser workflow checks were done with Claude in Chrome (`evidence/phase4/browser_workflow_2026-11-11.md`). Component and workflow tests run in jsdom against a scripted backend; API workflows run over HTTP against PostgreSQL.

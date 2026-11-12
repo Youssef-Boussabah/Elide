@@ -1,13 +1,13 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **implemented on `feat/p3-ai-policy-negotiation`, pending owner review**; not merged; no P4 work started. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **implemented on `feat/p4-merchant-platform`, pending owner architectural review**; not merged. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
 | P0 | API access + hosted Sandbox invoice payment route proven | **Complete** (owner-reviewed): payment route Sandbox-verified (invoice PAID); public repo + CI green ([run #1](https://github.com/Youssef-Boussabah/Elide/actions/runs/42916020788)) | Redacted API responses + provider IDs/status + code SHA |
 | P1 | Money model, reserves, fees, revisions and fixtures pass | **Complete** (owner-approved 2026-11-11; merged `41c0f9f`): 329 tests pass (0 skipped), incl. 16 Hypothesis properties and 39 PostgreSQL integration tests; CI run #7 on `main` green | pytest / property test output |
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
-| P3 | Live policy parsing and bounded offer proposal safely gated | **Implemented, pending review** on `feat/p3-ai-policy-negotiation`: real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled cases; 612 tests pass | Prompt version + schema result + injection tests |
-| P4 | Separate merchant sessions, approvals, permissioned UI | Not started | E2E run and auth isolation test |
+| P3 | Live policy parsing and bounded offer proposal safely gated | **Complete** (owner-approved `dc5949e`, CI run #17; merged `3100091`, CI run #18): real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled development cases; 633 tests pass | Prompt version + schema result + injection tests |
+| P4 | Separate merchant sessions, approvals, permissioned UI | **Implemented, pending review** on `feat/p4-merchant-platform` (see P4 detail): sessions, roles, tenant isolation, durable negotiation and approvals, workspace UI; API and browser workflow verified. Live payment execution remains P5 | E2E run and auth isolation test |
 | P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
 | P7 | Public license/repo, working demo, video, submission | Not started | Public links, release SHA, submission receipt |
@@ -628,6 +628,154 @@ Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.
 | GitHub Actions run #15 (id 43103506735) on `430e783` | **success**: backend (incl. `alembic check` and pytest) and frontend. Runs #13 and #14 on earlier commits are stuck in "queued" and superseded |
 | Secret scan of staged files for the real key value | 0 files |
 
+### P3 approval and merge (2026-11-11)
+
+- The owner approved `dc5949e6752130f7120fb303aaec61f2357c89f1` for the tested synthetic and
+  real-LLM-inference scope. It is **not** approved for production financial execution.
+- CI on the approved commit: [run #17](https://github.com/Youssef-Boussabah/Elide/actions/runs/43107743283), success.
+- Merge: `git merge --no-ff dc5949e` into `main` gave **`3100091`**. Its tree is identical
+  to the approved commit; no history was rewritten and the branch is kept.
+  [CI run #18](https://github.com/Youssef-Boussabah/Elide/actions/runs/43111098870) on
+  `main`: success.
+- Preserved unchanged: the real Nebius evidence (including the failed date evaluation),
+  the synthetic benchmarks and the PayPal Sandbox receipts. No credentials were changed.
+
+## P4 detail (2026-11-11, branch `feat/p4-merchant-platform` from `3100091`)
+
+- **Design record:** ADR-0011, covering the options evaluated, the phase boundary, roles,
+  state machines, the threat-to-control-to-test table and an implementation addendum.
+- **API contract:** `docs/api/P4_WORKSPACE_API.md`.
+- **Browser evidence:** `evidence/phase4/browser_workflow_2026-11-11.md`.
+- **Operations:** no model calls, no PayPal calls and no money moved in P4.
+
+### Implemented
+
+**Identity** (`api/app/auth/`)
+- Passwords are hashed with Argon2id (`argon2-cffi`).
+- Sessions are server-side and opaque in PostgreSQL; only the SHA-256 of the token is
+  stored. The cookie is HttpOnly and SameSite=Strict, with `__Host-` and Secure when
+  configured or in production.
+- Sessions expire after 30 minutes idle and 8 hours absolute. Login rotates the session;
+  logout revokes it.
+- CSRF: an HMAC-derived token plus an Origin check.
+- Rate limits are stored in the database: login is throttled at 5 failures per login and
+  20 per address per 15 minutes, plus a per-session limit on state-changing requests.
+- Terms, payment, policy and member decisions need a password re-check within 10 minutes.
+- Seeded users are `is_test_identity` and labelled TEST IDENTITY.
+
+**Authorization**
+- Five roles (owner, approver, policy_editor, auditor, viewer) map to 7 permission scopes.
+- The merchant in the path is a selector, checked against an active membership on every
+  request.
+- Foreign and nonexistent merchants and objects return the identical 404.
+- Denials go to a security audit log with a NULL merchant scope.
+- Revocation takes effect immediately.
+
+**Persistence** (migration `0004_merchant_platform`, 22 tables)
+- Users, merchants, memberships, sessions, login attempts and rate windows.
+- Networks and participation, including consent to aggregate disclosure.
+- Obligations and immutable revisions; P1 rules are re-checked on every load.
+- Policy drafts and revisions; offers and decisions.
+- Plan snapshots; only verified plans are stored, enforced by a CHECK.
+- Payment authorizations, payment intents and the outbox.
+- A hash-chained audit trail, idempotency records, and the LLM budget and reservations.
+- Guards: append-only triggers; offers close once; memberships are revoked once.
+- No duplicate cash balances. The P1 capacity store is reused, with `reserve_capacity_in`
+  added.
+
+**Negotiation** (`api/workflow/negotiation.py`)
+- Propose, accept, reject, counter and withdraw are bound to `terms_digest` and taken under
+  row locks (obligation, then offer).
+- One open offer per invoice, no credit extension, and a guard on amounts in the message.
+- An agreed amendment is a P1 AUTHORIZED revision signed by both parties. Payment
+  authorization is separate.
+
+**Recommendations** (`api/workflow/plans.py`, `networks.py`)
+- The permissioned network is built from PostgreSQL and run through the P3 analyzer. The
+  P2 plan is checked by the independent replay verifier before it is stored.
+- Views are merchant-scoped, and aggregates are suppressed without consent or below the
+  small-group threshold.
+- Merchants without a confirmed policy get POLICY_NOT_CONFIRMED.
+- A genuine NO_ACTION outcome is supported.
+- Invoices in execution are not planned again.
+
+**Payment boundary** (`api/workflow/payments.py`, `webhooks.py`)
+- Leg authorization is payer-only, bound to plan, option, revision, payee, amount, fee
+  ceiling and expiry.
+- Intent creation re-checks the approval, its expiry, the approver's current authority,
+  the terms and any upstream dependency, then serializes per invoice and reserves capacity
+  atomically.
+- The outbox stays HELD (`PAYMENTS_EXECUTION_ENABLED` is false).
+- Webhook intake checks schema and headers and requires a verifier (503 by default). It
+  deduplicates in the inbox and enqueues a held provider fetch; a body never changes state.
+
+**LLM metering**
+- The file guard gains reservation identity, idempotent settlement and an explicit
+  overage block.
+- New `PgSpendGuard`: PostgreSQL-backed and multi-instance, with operator acknowledgement
+  of overages and operator release of stale reservations.
+- Both remain local estimates, not provider billing.
+
+**Merchant workspace UI** (`web/`)
+- Screens: sign-in and merchant selection; Today (liquidity with evidence basis and
+  timestamps); Opportunities; Network (scoped SVG plus an accessible table); Negotiations
+  (independent decisions, counter with a bounded suggestion); Plan & approvals
+  (exact-terms confirmation, held intents); Policy (grounded drafts, digest
+  confirmation); Audit.
+- The step-up dialog retries the action with the same idempotency key.
+- Accessibility and states: skip link, aria labels, table captions, loading, empty and
+  error states, and distinct state labels.
+
+### Verification (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.1:5433`)
+
+| Check | Result |
+|---|---|
+| `ruff check` / `ruff format --check` / `alembic check` | pass / pass / no drift (head `0004_merchant_platform`; up/down/up round trip ok) |
+| `pytest` (full) | **668 passed, 0 failed, 0 skipped (incl. PostgreSQL integration), 1 known Starlette warning** |
+| New P4 integration tests (PostgreSQL, over HTTP, separate sessions) | 24 tests; listed below |
+| New contract and unit tests | Auth sweep over all `/v1/m` routes (401 without a session); roles, Argon2id, CSRF derivation, the audit secret guard, file-guard settlement |
+| Frontend `typecheck` / `lint` / `test` / `build` | exit 0 / exit 0 / **13 passed** (including 6 jsdom workflow tests) / ok |
+| Browser workflow (Claude in Chrome, local) | Buyer counters, supplier accepts from a separate login, buyer approves, held intent created. Cross-tenant 404, keyboard skip link, no console errors. 2 defects found and fixed with regression tests |
+
+The 24 integration tests cover:
+- **Workflow:** the full flow; a downstream intent refused; unagreed terms refused; offer
+  expiry; concurrent acceptance (exactly 1 winner); concurrent plans on the same cash
+  (exactly 1 reservation); a revoked approver; an invoice in execution not re-planned; the
+  audit trail append-only with its chain verified.
+- **Sessions and login:** cookie attributes; generic and rate-limited login; CSRF and
+  Origin; idle and absolute expiry; rotation on login.
+- **Isolation and roles:** the cross-tenant 404 matrix (2 merchants × 4 merchants ×
+  6 routes); party-scoped objects; roles; step-up.
+- **Validation:** the idempotency key requirement; offer validation; policy confirmation.
+- **Providers and metering:** webhooks; PostgreSQL metering across 16 instances.
+
+### P4 exit criteria (tracker gate + owner brief)
+
+| Criterion | Status |
+|---|---|
+| Separate authenticated merchant sessions | **Met** (synthetic TEST identities; not real merchant authentication) |
+| Server-established principal, roles, permission scopes, revocation, expiry | **Met** |
+| Object-level authorization; no cross-tenant leakage | **Met** for all P4 routes (negative matrix and response scans). The P3 demo routes remain fixture-only |
+| Independent, digest-bound approvals; replayed, stale, expired and conflicting decisions rejected | **Met** |
+| Durable workflow storage with constraints and audit | **Met** |
+| Proactive, privacy-scoped recommendations from persisted data | **Met** (synthetic network) |
+| Permissioned UI, keyboard support, laptop resolution | **Met** for the vertical flow; no formal WCAG audit |
+| Payment-intent preconditions (approval, revalidation, authority, idempotency, capacity) | **Met**; dispatch is disabled |
+| Real Sandbox payer payment, provider GET, webhook signature verification, duplicate-event posting | **Not in P4.** These are P5 and need owner authorization for the final Sandbox payment |
+
+### Remaining limitations / risks
+- No MFA or OIDC provider; no UI for granting memberships; the network is synthetic only.
+- Plans are recomputed on every view as `as_of` moves; decisions carry over for identical
+  terms.
+- Dependent (downstream) legs can be consented to but, by design, never executed before
+  upstream provider confirmation and verified availability.
+- The aggregate suppression threshold (2 contributors) is a conservative placeholder, not
+  a formal privacy guarantee.
+- The workspace makes no model calls. Enabling one needs owner authorization and a
+  configured `PgSpendGuard` budget.
+- No end-to-end test covers capacity contention between two different invoices; that path
+  is covered by the P1 reservation tests (`tests/integration/test_planner_reservations_db.py`).
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -735,3 +883,15 @@ Verification after hardening (2026-11-11, Windows 11, PostgreSQL 16 at `127.0.0.
   separately derived merchant-scoped views and prompts (privacy-probe tests), atomic spend
   reservation (threads + processes), six-endpoint API doc, evaluation caveats. 633 tests pass.
   No model or PayPal calls. Not merged. **Next task:** owner review of P3 (do not start P4).
+- 2026-11-11 (Claude Code, Opus 5.5): owner approved P3 (`dc5949e`), merged to `main` as
+  `3100091` (CI run #18 green). P4 on `feat/p4-merchant-platform`:
+  - ADR-0011 and migration 0004;
+  - sessions, roles and tenant isolation;
+  - durable negotiation and payment authorization, held payment intents, webhook intake;
+  - PostgreSQL LLM metering;
+  - the merchant workspace UI;
+  - a browser workflow check (2 defects fixed).
+
+  No model, PayPal or money operations. Not merged.
+  **Next task:** owner architectural review of P4. Start P5 only after approval, and make
+  the final Sandbox payment only with explicit owner authorization.
