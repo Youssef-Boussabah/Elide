@@ -8,7 +8,7 @@
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | **Complete** (owner-approved `dc5949e`, CI run #17; merged `3100091`, CI run #18): real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled development cases; 633 tests pass | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | **Complete** (owner-approved `7d971d9`, CI run #21; merged `1ed309a`, CI run #22): 689 backend, 18 frontend, 5 Playwright tests pass; synthetic scope only, outbox held | E2E run and auth isolation test |
-| P5 | Actual PayPal payer payment + provider GET + safe replay | **Implemented, gate pending** (see P5 detail): execution state machine, durable outbox worker, PayPal adapter, reconciliation and booking; owner gate review corrected (automatic cancellation off for the pilot; stable `PayPal-Request-Id`); 782 backend / 26 frontend / 9 Playwright pass; read-only Sandbox probe passed. **Missing:** one owner-authorized Sandbox payment (A13) and a verified webhook (A14) | Redacted receipt + journal + webhook replay |
+| P5 | Actual PayPal payer payment + provider GET + safe replay | **Sandbox payment evidence captured, pending final architectural review** (not merged): one owner-authorized invoice `INV2-HQXZ-SCNE-RKTV-VMMT` sent and paid (USD 24.00; capture `82L451107A123522J`, fee USD 1.00, credited CAD 31.57), booked once, independent checker clean, replay added nothing (`evidence/phase5/sandbox_payment_result_2026-11-12.md`). Open: verified webhook (A14), refund posting, ADR-0013 | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
 | P7 | Public license/repo, working demo, video, submission | Not started | Public links, release SHA, submission receipt |
 
@@ -1161,3 +1161,19 @@ original `cd40638+dirty` provenance.
   - Evidence: `evidence/phase5/dispatch_20261112T181937Z.json` (host name redacted).
   - **Next task:** the owner pays USD 24.00 in PayPal's hosted page; then read-only
     reconciliation, independent check and duplicate replay.
+- 2026-11-12 (Claude Code, Opus 5.5): the owner paid USD 24.00 in PayPal's hosted page
+  (capture `82L451107A123522J`, 18:24:35Z).
+  - Read-only reconciliation (mutations disabled): invoice PAID and strict terms clean;
+    capture COMPLETED, gross USD 24.00, fee USD 1.00, net USD 23.00, credited CAD 31.57 at
+    1.37241975; payee matches the binding.
+  - Booked once in one transaction: 5 entries, the settlement event and record. The
+    independent checker is clean, the trial balance is zero, and the obligation identity is
+    25.00 = 24.00 + 1.00 + 0.
+  - The payer's reservation became a settled outflow that stays committed. The payee receipt
+    is PROVIDER_CONFIRMED_NOT_SPENDABLE (D006/D008).
+  - Replay (duplicate fetches, a second reconcile, direct re-booking, re-posting) added
+    nothing.
+  - Exactly two mutating provider calls in the whole pilot (create, send). INV-1 reproduced
+    (7 h 59 m 59 s).
+  - Evidence: `evidence/phase5/settlement_*`, `replay_*`, `sandbox_payment_result_2026-11-12.md`.
+  - **Next task:** owner's final architectural review of P5. Do not merge without it.
