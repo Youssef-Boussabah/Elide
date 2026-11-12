@@ -134,3 +134,29 @@ describe("settlements (ADR-0012 §9)", () => {
     expect(screen.queryByText(/PayPal fee/)).toBeNull();
   });
 });
+
+describe("held intent release (owner-approved fix)", () => {
+  it("offers release only when the server says it is available, and confirms first", async () => {
+    const calls = installFakeBackend((c) =>
+      c.path.endsWith("/release") ? { status: 200, body: { status: "approved", dispatch: "queued" } } : undefined,
+    );
+    const changed = vi.fn();
+    row(intent({ status_reason: "EXECUTION_DISABLED", release_available: true }), "pilot_buyer", changed);
+    fireEvent.click(screen.getByRole("button", { name: "Allow PayPal dispatch" }));
+    expect(calls).toHaveLength(0);
+    expect(screen.getByText(/one PayPal invoice for USD 24.00 to pilot_seller/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm dispatch" }));
+    await waitFor(() => expect(changed).toHaveBeenCalled());
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.path).toMatch(/payment-intents\/pin_1\/release$/);
+    expect(calls[0]?.headers["Idempotency-Key"]).toMatch(/^op-/);
+  });
+
+  it("shows no release when it is not available or to the payee", () => {
+    row(intent({ status_reason: "EXECUTION_DISABLED", release_available: false }));
+    expect(screen.queryByRole("button", { name: "Allow PayPal dispatch" })).toBeNull();
+    cleanup();
+    row(intent({ status_reason: "EXECUTION_DISABLED", release_available: true }), "pilot_seller");
+    expect(screen.queryByRole("button", { name: "Allow PayPal dispatch" })).toBeNull();
+  });
+});

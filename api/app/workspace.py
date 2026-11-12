@@ -29,6 +29,7 @@ from api.app.auth.tables import app_user, membership, merchant_org
 from api.config import get_settings
 from api.domain.money import Money
 from api.execution import views as exec_views
+from api.execution.release import release_held_intent
 from api.execution.runtime import payer_email_resolver
 from api.negotiation.counteroffer import NegotiationCase, propose_counteroffer
 from api.negotiation.explain import narrate
@@ -585,7 +586,11 @@ def _execution_enabled(c: MerchantCtx) -> bool:
 @router.get("/payment-intents")
 def list_intents(c: Read) -> dict[str, Any]:
     with c.engine.begin() as conn:
-        return {"intents": payments.intents_for(conn, c.merchant_id)}
+        return {
+            "intents": payments.intents_for(
+                conn, c.merchant_id, execution_enabled=_execution_enabled(c)
+            )
+        }
 
 
 # --- P5 execution (ADR-0012 §8, §9) ---------------------------------------------------------
@@ -624,6 +629,41 @@ def payer_link(intent_id: str, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True)) -> JSO
         },
         headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
     )
+
+
+@router.post("/payment-intents/{intent_id}/release")
+def release_intent(
+    intent_id: str, c: ctx(P.PAYMENT_AUTHORIZE, step_up=True), key: IdemKey = None
+) -> dict[str, Any]:
+    """The payer's explicit, re-verified confirmation to dispatch a HELD intent (the same
+    intent, authorization and cash reservation). Never automatic; the worker revalidates
+    again before any PayPal call."""
+    if not key:
+        raise error(422, "IDEMPOTENCY_KEY_REQUIRED", "an Idempotency-Key header is required")
+
+    def op(conn):
+        return release_held_intent(
+            conn,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            intent_id=intent_id,
+            at=c.now,
+            execution_enabled=_execution_enabled(c),
+            provider=getattr(c.request.app.state, "payment_provider", None),
+            payer_email=_payer_email(c),
+        )
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route=f"intents.release:{intent_id}",
+        body={},
+        at=c.now,
+        operation=op,
+    )
+    return {**res, "replayed": replayed}
 
 
 @router.post("/payment-intents/{intent_id}/cancel")

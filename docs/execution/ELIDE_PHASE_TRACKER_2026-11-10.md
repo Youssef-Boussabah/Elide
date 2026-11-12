@@ -1127,3 +1127,21 @@ original `cd40638+dirty` provenance.
   pinned by 3 passing tests and 3 strict xfails. Nothing implemented; no PayPal call, worker
   run or database change. The approval expires 2026-11-13T17:11Z. **Next task:** owner
   review of the fix.
+- 2026-11-12 (Claude Code, Opus 5.5): owner approved both held-intent fixes (baseline
+  `981f08e`, CI run #30).
+  - A: the plan view reports `in_execution` / `in_execution_conditions_changed` from the
+    execution-aware revalidation; there is no re-approval for invoices in execution and no
+    false staleness.
+  - B: a payer-only, step-up, idempotent `POST /payment-intents/{id}/release` that runs the
+    worker's `revalidate()` and moves the same intent's single held, never-attempted job to
+    pending. No schema change: the existing idempotency record fits.
+  - Tests: 22 release/view tests (xfails activated), 2 jsdom, 1 Playwright. One P4 Playwright
+    assertion updated: it expected the defect's label for an in-execution leg.
+  - Results: 808 backend (+1 ADR-0013 strict xfail), 28 frontend, 10 Playwright; ruff and
+    alembic clean.
+  - The real pilot is untouched (`pilot_intent_state_20261112T175340Z.json`). The pilot API
+    still runs the earlier code with execution off.
+  - No PayPal call, no worker run, nothing released. **Next task:** owner review. After
+    approval: restart the pilot API on the reviewed commit in queue mode; the owner releases
+    the intent; final pre-dispatch checks; the single authorized invoice. The approval
+    expires 2026-11-13T17:11:29Z.

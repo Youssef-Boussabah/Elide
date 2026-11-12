@@ -287,10 +287,26 @@ def _intent_json(r: Any) -> dict[str, Any]:
     return {**out, **_labels(r["status"], queued or live)}
 
 
-def intents_for(conn: Connection, merchant_id: str) -> list[dict[str, Any]]:
+RELEASABLE_REASONS = ("EXECUTION_DISABLED", "PROVIDER_NOT_CONNECTED")
+
+
+def intents_for(
+    conn: Connection, merchant_id: str, *, execution_enabled: bool = False
+) -> list[dict[str, Any]]:
     rows = conn.execute(
         select(payment_intent)
         .where(payment_intent.c.payer_merchant == merchant_id)
         .order_by(payment_intent.c.created_at.desc())
     ).mappings()
-    return [_intent_json(r) for r in rows]
+    out = []
+    for r in rows:
+        j = _intent_json(r)
+        # Only a hint for the UI: the release route re-checks everything itself.
+        j["release_available"] = (
+            execution_enabled
+            and r["status"] == "approved"
+            and r["evidence_kind"] != "synthetic"
+            and r["status_reason"] in RELEASABLE_REASONS
+        )
+        out.append(j)
+    return out

@@ -191,4 +191,57 @@ test.describe.serial("payment execution (mock PayPal)", () => {
     await expect(row).toContainText("reason: CONDITIONS_CHANGED");
     expect((await mockCalls(request)).filter((c) => c === "create_invoice")).toHaveLength(before);
   });
+
+  test("a held intent shows IN EXECUTION, and only the payer's confirmed release queues it", async ({
+    browser,
+    request,
+  }) => {
+    const off = await request.post(`${API}/__e2e__/execution`, { data: { enabled: false } });
+    expect(off.ok()).toBeTruthy();
+    const buyer = await signIn(browser, BUYER);
+    await buyer.goto("/#/m/pilot_buyer/negotiations");
+    const offer = buyer.getByRole("article", { name: "Offer on pilot_004" });
+    await offer.getByRole("button", { name: "Accept these terms" }).click();
+    await expect(buyer.getByText("Recorded: agreed.")).toBeVisible();
+    await buyer.goto("/#/m/pilot_buyer/plan");
+    await buyer.getByRole("button", { name: /Create plan for approval|Re-check and update plan/ }).click();
+    await expect(buyer.getByText(/independently verified and stored|was reused/)).toBeVisible();
+    const leg = buyer.getByRole("article", { name: /Leg pilot_004:r\d+/ });
+    await leg.getByRole("button", { name: "Approve my payment…" }).click();
+    await leg.getByRole("button", { name: "Confirm approve" }).click();
+    await expect(leg.getByText("APPROVED")).toBeVisible();
+    await leg.getByRole("button", { name: "Prepare payment intent" }).click();
+    const row = buyer.getByRole("row").filter({ hasText: "pilot_004" });
+    await expect(row).toContainText("held: no PayPal call (payment execution is switched off)");
+    await expect(row.getByRole("button", { name: "Allow PayPal dispatch" })).toHaveCount(0);
+
+    // The plan must not ask for a second approval of an invoice that is in execution.
+    await buyer.reload();
+    await expect(leg.getByText("IN EXECUTION", { exact: true })).toBeVisible();
+    await expect(leg.getByText("CONDITIONS CHANGED: RE-APPROVE")).toHaveCount(0);
+    await expect(leg.getByRole("button", { name: "Approve my payment…" })).toHaveCount(0);
+
+    // Switching execution on releases nothing by itself.
+    const before = (await mockCalls(request)).length;
+    await request.post(`${API}/__e2e__/execution`, { data: { enabled: true } });
+    await runWorker(request);
+    expect((await mockCalls(request)).length).toBe(before);
+
+    // The payee sees the payment in execution but cannot release it.
+    const seller = await signIn(browser, SELLER);
+    await seller.goto("/#/m/pilot_seller/plan");
+    await expect(seller.getByRole("button", { name: "Allow PayPal dispatch" })).toHaveCount(0);
+
+    await buyer.reload();
+    await row.getByRole("button", { name: "Allow PayPal dispatch" }).click();
+    await expect(row).toContainText("one PayPal invoice for USD 24.00 to pilot_seller");
+    await row.getByRole("button", { name: "Confirm dispatch" }).click();
+    await expect(row).toContainText("queued for PayPal");
+    await runWorker(request);
+    await buyer.reload();
+    await expect(row).toContainText("AWAITING PAYER AT PAYPAL");
+    const calls = (await mockCalls(request)).slice(before);
+    expect(calls.filter((c) => c !== "get_invoice")).toEqual(["create_invoice", "send_invoice"]);
+  });
 });
+

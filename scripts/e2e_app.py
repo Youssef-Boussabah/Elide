@@ -12,7 +12,8 @@ Test-only controls (they stand in for things outside Elide):
   does), making already-queued messages due now;
 - `POST /__e2e__/mock/pay`    : the payer pays the newest intent of an obligation in
   "PayPal's hosted page" (optionally as a different payee account, to test the guard);
-- `GET  /__e2e__/mock/calls`  : the provider calls made so far (operations and ids only).
+- `GET  /__e2e__/mock/calls`  : the provider calls made so far (operations and ids only);
+- `POST /__e2e__/execution`   : switch the API's execution flag (queued vs held at creation).
 """
 
 from __future__ import annotations
@@ -118,6 +119,18 @@ def pay(body: PayBody, request: Request) -> dict:
         raise HTTPException(404, "no PayPal invoice for that obligation yet")
     capture = mock.pay(inv, payee_merchant_id=body.payee_merchant_id)
     return {"paid": True, "capture_id": capture}
+
+
+class ExecutionBody(BaseModel):
+    enabled: bool
+
+
+@router.post("/execution")
+def set_execution(body: ExecutionBody, request: Request) -> dict:
+    """Test control: the API's execution switch (what decides queued vs held at creation)."""
+    _loopback(request)
+    app.state.payments_execution_enabled = body.enabled
+    return {"execution_enabled": body.enabled}
 
 
 @router.get("/mock/calls")

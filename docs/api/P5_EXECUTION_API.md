@@ -26,6 +26,7 @@ Every intent response carries `money_moved`, `provider_confirmed` and `funds_usa
 |---|---|---|---|
 | GET | `/payment-intents/{id}` | `workspace:read` (payer or payee) | State, reason, history, exceptions (codes), session summary (no link). Payer also sees its reservation; payee sees its settlement (fee, net, credit, receipt status) |
 | GET | `/payment-intents/{id}/payer-link` | `payment:authorize` + step-up, payer only | Fetches the invoice by GET, re-checks terms, returns `recipient_view_url` (Sandbox host only). `Cache-Control: no-store`. `409 NOT_AWAITING_PAYER`, `409 PAY_DEADLINE_PASSED`, `409 NEEDS_REVIEW`, `409 PROVIDER_TERMS_MISMATCH`, `409 PROVIDER_UNAVAILABLE` |
+| POST | `/payment-intents/{id}/release` | `payment:authorize` + step-up, payer only, Idempotency-Key | Release a HELD intent (held for `EXECUTION_DISABLED` / `PROVIDER_NOT_CONNECTED`): exactly one held, never-attempted job; the worker's `revalidate()`; held → pending; same intent, authorization and reservation. `409`: `EXECUTION_DISABLED`, `ALREADY_QUEUED`, `NOT_HELD`, `NOT_RELEASABLE`, `PREVIOUSLY_ATTEMPTED`, `CONFLICTING_JOB`, `COMPETING_INTENT`, `SYNTHETIC_EVIDENCE`, `PROVIDER_UNAVAILABLE`, or any revalidation code (`AUTHORIZATION_EXPIRED`, `AUTHORIZATION_REVOKED`, `CONDITIONS_CHANGED`, `VERIFIER_REJECTED`, `COMMITMENT_MISSING`, `PROVIDER_NOT_CONNECTED`, ...) |
 | POST | `/payment-intents/{id}/cancel` | `payment:authorize` + step-up, payer only, Idempotency-Key | `approved`: cancelled now, cash released. `session_pending`/`payer_action_pending`: cancellation requested; cash released only after PayPal's cancellation is confirmed by GET. Otherwise `409 CANNOT_CANCEL` |
 | POST | `/capacity-evidence` | `payment:authorize` + step-up, Idempotency-Key | Merchant-attested USD balance: `verified_spendable_cents`, `protected_reserve_cents`, `valid_hours` (1-72), `included_receipt_ids`, `included_outflow_ids`. Listing a settled outflow releases exactly that commitment. Refused for synthetic merchants (`409 SYNTHETIC_MERCHANT`); foreign outflow ids `404` |
 | GET | `/settlements` | `workspace:read` | Reconciled captures where the merchant is payer or payee, scoped as above |
@@ -53,3 +54,11 @@ time, or one whose approver lost authority after it was sent, stays in
 cash stays reserved. Other review codes: `PROVIDER_REQUEST_CONFLICT`, `CAPTURE_MISMATCH`,
 `PARTIAL_PAYMENT`, `MARKED_AS_PAID_NOT_PROVIDER_EVIDENCE`, `PAID_TERMS_MISMATCH`,
 `DEAD_LETTER`, `REFUND_OBSERVED`.
+
+## Plan view for invoices in execution
+
+`GET /plans/{id}`: a leg whose invoice has a non-terminal intent has `payment_authorization`
+of `{"status": "in_execution", "intent_id", "intent_status"}`. The payer also gets
+`authorization_id` and, before dispatch, `expires_at`. If the execution-aware
+revalidation fails, the status is `in_execution_conditions_changed` with `problems`. No
+`authorize` block is offered for such a leg.

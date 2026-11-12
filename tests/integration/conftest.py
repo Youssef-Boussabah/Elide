@@ -297,8 +297,7 @@ class Pilot(Workspace):
             ).scalar_one_or_none()
 
 
-@pytest.fixture
-def pilot(fresh_db):
+def _pilot(fresh_db, obligations: int):
     from datetime import UTC, datetime
 
     from api.app.main import create_app
@@ -308,7 +307,13 @@ def pilot(fresh_db):
     engine, _url = fresh_db
     clock = [datetime(2026, 11, 11, 18, 0, tzinfo=UTC)]
     passwords = {login: f"test-only-{i}-{uuid.uuid4().hex[:12]}" for i, login in enumerate(USERS)}
-    seeded = seed_pilot(engine, now=clock[0], passwords=passwords, attest_buyer=(20000, 5000))
+    seeded = seed_pilot(
+        engine,
+        now=clock[0],
+        passwords=passwords,
+        attest_buyer=(20000, 5000),
+        obligations=obligations,
+    )
     flags = {"execution": True}
     mock = MockPayPal(clock=lambda: clock[0], payee_merchant_id=PILOT_PAYEE_MERCHANT_ID)
     app = create_app()
@@ -317,4 +322,15 @@ def pilot(fresh_db):
     app.state.payments_execution_enabled = True
     app.state.payment_provider = mock
     app.state.payer_email = lambda: PILOT_PAYER_EMAIL
-    yield Pilot(app, engine, clock, seeded, mock, flags)
+    return Pilot(app, engine, clock, seeded, mock, flags)
+
+
+@pytest.fixture
+def pilot(fresh_db):
+    yield _pilot(fresh_db, 1)
+
+
+@pytest.fixture
+def pilot_two(fresh_db):
+    """The pilot network with two independent obligations (pilot_001, pilot_002)."""
+    yield _pilot(fresh_db, 2)

@@ -15,6 +15,8 @@ const AUTH_LABEL: Record<string, { label: string; tone: "good" | "warn" | "bad" 
   pending: { label: "PENDING YOUR DECISION", tone: "warn" },
   expired: { label: "APPROVAL EXPIRED", tone: "bad" },
   needs_reapproval: { label: "CONDITIONS CHANGED: RE-APPROVE", tone: "bad" },
+  in_execution: { label: "IN EXECUTION", tone: "good" },
+  in_execution_conditions_changed: { label: "IN EXECUTION: CONDITIONS CHANGED", tone: "bad" },
 };
 
 /** Durable plans are created explicitly (POST); viewing never writes anything. */
@@ -267,6 +269,15 @@ function LegCard({
       {iPay && auth.status === "needs_reapproval" && (
         <div className="mt-3">
           <Notice tone="warn">{auth.reason ?? "The conditions of your earlier approval changed."}</Notice>
+        </div>
+      )}
+      {(auth.status === "in_execution" || auth.status === "in_execution_conditions_changed") && (
+        <div className="mt-3">
+          <Notice tone={auth.status === "in_execution" ? "info" : "warn"}>
+            {auth.status === "in_execution"
+              ? `This payment is in execution (intent ${auth.intent_id}). It is not planned or approved again.`
+              : `This payment is in execution (intent ${auth.intent_id}), but its approval no longer holds (${(auth.problems ?? []).join(", ")}). It will not be sent to PayPal as it stands.`}
+          </Notice>
         </div>
       )}
       {iPay && auth.status === "expired" && (

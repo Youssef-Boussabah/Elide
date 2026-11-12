@@ -67,6 +67,7 @@ export function IntentRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmRelease, setConfirmRelease] = useState(false);
   const label = EXECUTION_LABEL[intent.status] ?? { state: intent.status.toUpperCase(), detail: "" };
   const held = heldReason(intent);
   const iPay = intent.payer_merchant === undefined || intent.payer_merchant === merchant;
@@ -80,6 +81,27 @@ export function IntentRow({
       );
       // PayPal's hosted page; the link is never stored by Elide.
       window.open(r.url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setError(explain(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const release = async () => {
+    setBusy(true);
+    setError(null);
+    const key = newOperationKey();
+    try {
+      await withStepUp(() =>
+        api(`/v1/m/${merchant}/payment-intents/${intent.intent_id}/release`, {
+          method: "POST",
+          body: {},
+          operationKey: key,
+        }),
+      );
+      setConfirmRelease(false);
+      onChange();
     } catch (err) {
       setError(explain(err));
     } finally {
@@ -137,6 +159,27 @@ export function IntentRow({
             <button type="button" className="btn-primary" disabled={busy} onClick={openPayPal}>
               Open PayPal payment page
             </button>
+          )}
+          {iPay && canAuthorize && intent.release_available && !confirmRelease && (
+            <button type="button" className="btn-primary" disabled={busy} onClick={() => setConfirmRelease(true)}>
+              Allow PayPal dispatch
+            </button>
+          )}
+          {confirmRelease && (
+            <span role="group" aria-label="Confirm PayPal dispatch" className="flex flex-col gap-1">
+              <span className="text-xs">
+                Elide re-checks your approval, terms, cash and accounts now, then queues this same
+                intent: one PayPal invoice for {money(intent.amount_cents)} to {intent.payee_merchant}.
+              </span>
+              <span className="flex gap-1">
+                <button type="button" className="btn-primary" disabled={busy} onClick={release}>
+                  Confirm dispatch
+                </button>
+                <button type="button" className="btn-secondary" disabled={busy} onClick={() => setConfirmRelease(false)}>
+                  Keep held
+                </button>
+              </span>
+            </span>
           )}
           {iPay && canAuthorize && CANCELLABLE.has(intent.status) && !confirmCancel && (
             <button type="button" className="btn-secondary" disabled={busy} onClick={() => setConfirmCancel(true)}>

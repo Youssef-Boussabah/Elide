@@ -55,8 +55,8 @@ def main() -> int:
     now = datetime.now(UTC)
     result = seed(engine, now=now)
     # P5: a non-synthetic pilot network bound to the MOCK provider of scripts/e2e_app.py
-    # (three independent USD 25.00 obligations, buyer capacity attested for the test).
-    pilot = seed_pilot(engine, now=now, obligations=3, attest_buyer=(20000, 5000))
+    # (four independent USD 25.00 obligations, buyer capacity attested for the test).
+    pilot = seed_pilot(engine, now=now, obligations=4, attest_buyer=(20000, 5000))
     bind_pilot(engine, now)
     engine.dispose()
     out = ROOT / ".local" / "e2e_credentials.json"

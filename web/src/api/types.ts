@@ -140,8 +140,19 @@ export type PlanLeg = {
   depends_on: string[];
   has_upstream_dependency?: boolean;
   payment_authorization?: {
-    status: "pending" | "approved" | "declined" | "expired" | "needs_reapproval" | string;
+    status:
+      | "pending"
+      | "approved"
+      | "declined"
+      | "expired"
+      | "needs_reapproval"
+      | "in_execution"
+      | "in_execution_conditions_changed"
+      | string;
     authorization_id?: string | null;
+    intent_id?: string;
+    intent_status?: string;
+    problems?: string[];
     expires_at?: string;
     reason?: string;
   };
@@ -302,4 +313,5 @@ export type PaymentIntent = {
   money_moved: boolean;
   provider_confirmed?: boolean;
   funds_usable?: boolean;
+  release_available?: boolean;
 };

@@ -1,7 +1,8 @@
 # P5 pilot: held intent and false "CONDITIONS CHANGED" (2026-11-12)
 
-**Status:** both issues reproduced; root causes established; fixes proposed, **not
-implemented**. No payment authority changed, no PayPal call, no worker run, no mutation
+**Status:** both issues reproduced; root causes established. Fixes **approved by the owner and
+implemented** (section *Implementation*, below). The text above that section is the original
+finding, kept unchanged. No payment authority changed, no PayPal call, no worker run, no mutation
 enabled, and the pilot database was not altered: the diagnosis ran in a rolled-back
 transaction.
 
@@ -125,3 +126,56 @@ intent is cancelled). The evidence lasts until 2026-11-15T17:10Z.
 | The view reports `in_execution` and offers no re-approval | specification | strict xfail (fails on `needs_reapproval`) |
 | Release queues the same intent once, after revalidation; the worker then sends once | specification | strict xfail (route missing) |
 | Release refused while execution is off | specification | strict xfail (route missing) |
+
+## Implementation (owner-approved, 2026-11-12)
+
+**A. Plan view (`api/workflow/plans.py`).**
+- A leg whose invoice has a non-terminal intent reports `in_execution` with the intent id and
+  status. The payer also gets the authorization id.
+- No `authorize` block is offered.
+- For intents not yet dispatched (`approved`, `session_pending`), the approval is re-judged
+  as the worker does: unexpired, conditions digest recomputed with
+  `load_network(executing_intent=...)`, and the independent verifier.
+- Any failure is reported as `in_execution_conditions_changed`, with `problems`
+  (`AUTHORIZATION_EXPIRED`, `CONDITIONS_CHANGED`, `VERIFIER_REJECTED`, `NOT_APPROVED`). The
+  approval is never shown as valid in that case.
+- The payee sees only `in_execution` with the intent id and status.
+- Other legs' `plan_current` is computed on a network that includes the plan's in-execution
+  invoices and excludes their own reservations (`load_network(executing_intents=...)`).
+- Unrelated merchants still get 404 for the plan.
+
+**B. Release (`api/execution/release.py`; `POST /v1/m/{m}/payment-intents/{id}/release`).**
+- Payer only, with `payment:authorize`, a recent step-up and an `Idempotency-Key`, stored in
+  the existing `idempotency_record`. Its semantics fit: (merchant, key), the request digest
+  includes the route, the response is stored in the same transaction, and failures are not
+  stored. **No schema change was needed.**
+- Locks: the actor's membership (share), the outbox message(s), the intent, then the
+  approver's membership and the rest inside `revalidate()`. That is the worker's order.
+- Accepts only the payer's approved, non-synthetic intent held for `EXECUTION_DISABLED` or
+  `PROVIDER_NOT_CONNECTED`, with execution enabled. There must be exactly one
+  `create_payment_session` message, held and never attempted (0 attempts, no lease, no
+  finish), and no provider session, request or operation.
+- Refuses on `COMPETING_INTENT`, then runs the worker's `revalidate()`. It moves the message
+  `held → pending` and sets `status_reason=QUEUED_FOR_PROVIDER`; the status stays `approved`.
+- It writes a `payment_state_event` (`RELEASED_BY_PAYER`) and an audit event. The same
+  intent, authorization and commitment are kept.
+- A second release is `ALREADY_QUEUED`, and concurrent releases succeed exactly once.
+- `GET /payment-intents` exposes `release_available`, a UI hint only. The UI shows "Allow
+  PayPal dispatch" with a confirmation.
+- Enabling execution, or any configuration change, releases nothing; this is tested.
+
+**Tests.**
+- `tests/integration/test_p5_intent_release.py`: 22 tests, all passing; the earlier strict
+  xfails are now real tests and the reproduction asserts the corrected behaviour.
+- 2 new jsdom tests, and a Playwright test that takes a held intent through IN EXECUTION,
+  "no release by switch", payee denial and the payer's release to one mock invoice.
+- The P4 Playwright assertion for the in-execution `food_001` leg now expects
+  `IN EXECUTION: CONDITIONS CHANGED`; the old expectation was this defect's label.
+- The ADR-0013 strict xfail is unchanged.
+
+**The real pilot is untouched.** Re-read at 17:53:40Z
+(`evidence/phase5/pilot_intent_state_20261112T175340Z.json`): the intent is still `approved`
+and held for `EXECUTION_DISABLED`; one USD 24.00 reservation; one held message with 0
+attempts; the approval expires 2026-11-13T17:11:29Z; the conditions match and the verifier is
+clean. The pilot API process still runs the earlier code with execution off. It must be
+restarted on this commit before the owner can use the release action.

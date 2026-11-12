@@ -90,13 +90,16 @@ def load_network(
     initiator: str,
     as_of: datetime,
     executing_intent: str | None = None,
+    executing_intents: tuple[str, ...] = (),
 ) -> LoadedNetwork:
     """The permissioned network at `as_of`.
 
     `executing_intent` (P5 revalidation, ADR-0012 §5): re-check one intent that is already
     in execution. Its invoice is included and its own cash reservation is excluded, so
     the independent verifier judges the payment exactly as when the intent was created,
-    against everything else that has changed since."""
+    against everything else that has changed since. `executing_intents` does the same
+    for several intents at once (the plan view: a plan whose invoices are in execution is not
+    stale merely because they left future optimization)."""
     row = (
         conn.execute(select(network_table).where(network_table.c.network_id == network_id))
         .mappings()
@@ -107,17 +110,25 @@ def load_network(
         raise NotVisibleError("not found")
     synthetic = bool(row["is_synthetic"])
     clock = SlotClock.uniform(as_of, SLOT, SLOTS)
-    own = None
-    if executing_intent is not None:
-        own = (
-            conn.execute(
+    wanted = tuple(
+        dict.fromkeys(((executing_intent,) if executing_intent else ()) + executing_intents)
+    )
+    owned = (
+        [
+            dict(r)
+            for r in conn.execute(
                 select(payment_intent.c.obligation_id, payment_intent.c.commitment_id).where(
-                    payment_intent.c.intent_id == executing_intent
+                    payment_intent.c.intent_id.in_(wanted)
                 )
-            )
-            .mappings()
-            .one()
-        )
+            ).mappings()
+        ]
+        if wanted
+        else []
+    )
+    if len(owned) != len(wanted):
+        raise NotVisibleError("not found")
+    own_commitments = {o["commitment_id"] for o in owned}
+    own_obligations = {o["obligation_id"] for o in owned}
 
     positions, evidence = [], {}
     for m in share:
@@ -134,7 +145,7 @@ def load_network(
                 commitments=[
                     c
                     for c in _active_commitments(conn, m)
-                    if own is None or c.commitment_id != own["commitment_id"]
+                    if c.commitment_id not in own_commitments
                 ],
                 allow_synthetic=synthetic,
             )
@@ -161,8 +172,7 @@ def load_network(
             select(payment_intent.c.obligation_id).where(payment_intent.c.status.in_(ACTIVE_INTENT))
         ).scalars()
     )
-    if own is not None:
-        executing.discard(own["obligation_id"])
+    executing -= own_obligations
     invoices = []
     for oid in network_obligation_ids(conn, network_id):
         if oid in executing:
