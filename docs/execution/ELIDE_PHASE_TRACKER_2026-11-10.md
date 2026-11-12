@@ -1,5 +1,5 @@
 # ELIDE — Phase Gate Tracker
-**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 on `feat/p5-paypal-execution`. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
+**State (2026-11-11):** P0 **complete**. P1 **complete** (merged `41c0f9f`). P2 **complete**: owner-approved at `04663db` (CI run #11) for the synthetic research scope, merged to `main` at `7bb068c`. P3 **complete**: owner-approved at `dc5949e` (CI run #17) for the tested synthetic and real-LLM-inference scope (not production financial execution), merged to `main` at `3100091` (CI run #18 green). P4 **complete**: owner-approved at `7d971d9` (CI run #21) for the tested synthetic scope, merged to `main` at `1ed309a` (CI run #22 green). P5 **implemented on `feat/p5-paypal-execution` (synthetic-tested; read-only Sandbox-verified), pending owner review; the controlled Sandbox payment is NOT authorized or performed**. Maintain this tracker in Git; update with commit, tests, redacted evidence and blocker notes.
 
 | Phase | Gate | Status | Evidence to attach |
 |---|---|---|---|
@@ -8,7 +8,7 @@
 | P2 | Exact optimizer agrees with separate verifier and fair baselines | **Complete** (owner-approved `04663db`, CI run #11; merged `7bb068c`): 487 tests pass (0 skipped); solver = brute force on 640/640 checks; B0–B5 benchmark in `evidence/phase2/` | B0–B5 test table + seed/trace |
 | P3 | Live policy parsing and bounded offer proposal safely gated | **Complete** (owner-approved `dc5949e`, CI run #17; merged `3100091`, CI run #18): real Nebius inference (Qwen3-235B), 0 unsafe passes on 40 labelled development cases; 633 tests pass | Prompt version + schema result + injection tests |
 | P4 | Separate merchant sessions, approvals, permissioned UI | **Complete** (owner-approved `7d971d9`, CI run #21; merged `1ed309a`, CI run #22): 689 backend, 18 frontend, 5 Playwright tests pass; synthetic scope only, outbox held | E2E run and auth isolation test |
-| P5 | Actual PayPal payer payment + provider GET + safe replay | Not started | Redacted receipt + journal + webhook replay |
+| P5 | Actual PayPal payer payment + provider GET + safe replay | **Implemented, gate pending** (see P5 detail): execution state machine, durable outbox worker, PayPal adapter, reconciliation and booking; 764 backend / 24 frontend / 5 Playwright pass; read-only Sandbox probe passed. **Missing:** one owner-authorized Sandbox payment (A13) and a verified webhook (A14) | Redacted receipt + journal + webhook replay |
 | P6 | QA, financial invariants, security and clean clone | Not started | CI, test matrix, known issues |
 | P7 | Public license/repo, working demo, video, submission | Not started | Public links, release SHA, submission receipt |
 
@@ -843,6 +843,67 @@ ADR-0011 §13; the API contract was updated in `docs/api/P4_WORKSPACE_API.md`.
 - Preserved unchanged: the PayPal Sandbox receipts, the Nebius evidence, the synthetic
   benchmarks and the P4 review evidence. No credentials were changed.
 
+## P5 detail (2026-11-11/12, branch `feat/p5-paypal-execution` from `68b2268`)
+
+- **Design record:** ADR-0012 (provider identity mapping, state machines, revalidation,
+  idempotency without undocumented PayPal guarantees, reconciliation, invariants, acceptance
+  matrix, implementation addendum §15). **API:** `docs/api/P5_EXECUTION_API.md`.
+- **Gate proposal:** `evidence/phase5/sandbox_operation_gate_2026-11-12.md` (not authorized,
+  not performed).
+- **Operations:** no PayPal mutation, no payment, no credential change, no model call. One
+  read-only live probe (below).
+
+### Provider identity (verified, ADR-0012 §2)
+The app credentials belong to one Canadian Sandbox Business account, which is always the
+invoicer with first-party Invoicing v2. A leg executes only if its **payee** is bound to that
+account and its payer to the Sandbox Personal account; every other leg is held
+`PROVIDER_NOT_CONNECTED`. Partner invoicing for other merchants is not available (select
+partners only). PayPal does not document `PayPal-Request-Id` for create/send invoice, so
+idempotency uses deterministic invoice numbers, search-based lookup and GET-before-send.
+
+### Implemented
+- Migration `0006_p5_execution`: intent state machine enforced by trigger; outbox leases,
+  fencing token, attempts ceiling, dead letter; `provider_account` (references and
+  fingerprints only), `payment_session`, `provider_operation`, `payment_state_event`,
+  `obligation_settlement_event`, `provider_settlement`, `payment_exception`; commitment kind
+  and release reason; evidence `included_outflow_ids`. Up/down/up and `alembic check` clean.
+- `api/workers/outbox.py`: SKIP LOCKED claims, lease takeover, fencing, backoff, dead letter.
+- `api/execution/`: revalidation before every mutation, find-or-create draft with lookup,
+  send after GET, cancel/expiry confirmed by GET, strict invoice + capture matching, atomic
+  booking (settlement event, payee and payer bundles, settlement record, reservation ->
+  settled outflow) and the independent checker `api/accounting/reconciliation_check.py`.
+- PayPal: search, cancel, refund GET, webhook-signature postback with the verbatim event;
+  execution adapter with explicit outcomes; in-memory mock with fault injection (refused in
+  production).
+- Routes: intent detail, on-demand payer link, cancel, merchant-attested capacity,
+  settlements. UI: execution states, PayPal page action, cancel, provider-confirmed vs
+  funds-usable labels. Worker CLI, read-only probe, binding and pilot seed scripts.
+
+### Verification (2026-11-12, Windows 11, PostgreSQL 16 at `127.0.0.1:5433`)
+
+| Check | Result |
+|---|---|
+| `ruff check` / `ruff format --check` / `alembic check` | pass / pass / no drift (head `0006_p5_execution`; up/down/up ok) |
+| `pytest` (full, at `b0b40b1`) | **764 passed, 0 failed, 0 skipped** (689 previous + 75 new) |
+| New backend tests | 41 PostgreSQL integration (happy path, 34 failure/concurrency/adversarial cases, 6 webhook/checker cases) + 34 unit |
+| Frontend `typecheck` / `lint` / `test` | exit 0 / exit 0 / **24 passed** (18 previous + 6 new) |
+| Playwright (local, real stack, migration 0006) | **5 passed** (the P4 suite, unchanged) |
+| Read-only Sandbox probe (`evidence/phase5/readonly_probe_20261112T103417Z.json`) | OAuth, invoice GET, `search-invoices`, capture GET: all 200; P0 settlement reproduced exactly; strict PAID check 0 problems; search found exactly the P0 invoice; payee fingerprint = P0 record. Commit `cd40638+dirty` (evidence-guard fix uncommitted) |
+
+### Evidence classes
+- **Synthetic-tested:** everything in the execution, worker, reconciliation, webhook and UI
+  tests (mock provider).
+- **Sandbox-verified (read only):** the probe above (P0 resources re-read; nothing new).
+- **Not yet evidenced:** a new Sandbox payment through P5 (A13), verified webhook delivery
+  (A14), refund posting.
+
+### Blockers and owner actions
+1. **Authorize (or refuse) the controlled Sandbox operation** in the gate file (severity:
+   P5 gate blocker).
+2. **Webhooks:** decide on a public HTTPS endpoint and register a webhook (severity: medium;
+   reconciliation works by polling without it).
+3. Refund posting waits for an observed Sandbox refund (severity: low for the gate).
+
 ## Release claim categories
 - **Specified**: exists in architecture/docs only.
 - **Synthetic-tested**: program ran on invented data; not proof of merchant results.
@@ -977,3 +1038,9 @@ ADR-0011 §13; the API contract was updated in `docs/api/P4_WORKSPACE_API.md`.
   `main` green (689 / 18 / 5). **Next task:** P5 on `feat/p5-paypal-execution`: ADR-0012,
   then execution and reconciliation built against a mock provider; no new Sandbox payment
   without separate owner authorization.
+- 2026-11-12 (Claude Code, Opus 5.5): P5 on `feat/p5-paypal-execution`: ADR-0012, migration
+  0006, outbox worker, execution service, PayPal adapter + mock, reconciliation with
+  independent checker, webhook verifier, routes, UI, scripts. 764 backend / 24 frontend /
+  5 Playwright pass. Read-only Sandbox probe passed (no mutation). No new PayPal payment, no
+  credential change, no model call. Not merged. **Next task:** owner review of P5 and the
+  gate proposal; the Sandbox operation only after explicit authorization.

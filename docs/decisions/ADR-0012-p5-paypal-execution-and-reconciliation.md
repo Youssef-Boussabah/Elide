@@ -365,3 +365,45 @@ New: `tests/unit/execution/*`, `tests/contract/test_paypal_execution_adapter.py`
 `tests/integration/test_p5_*.py`, frontend and Playwright tests for execution states. The P4
 assertion that an intent starts in `awaiting_payer_action` changes to `approved` (migration
 `0006` renames the value; no other P4 regression changes).
+
+## 15. Implementation addendum (2026-11-12)
+
+Implemented as designed, with these decisions and divergences:
+
+1. **P4 behaviour preserved where P5 did not need to change it.** The webhook-triggered
+   fetch stays `held` unless a payment provider is configured (nothing could fetch it); the
+   UI keeps the P4 labels `INTENT_CREATED_NOT_SENT` and "held: no PayPal call" (now followed
+   by the reason). The only P4 assertion changed is the stored status value
+   (`awaiting_payer_action` → `approved`, renamed by migration 0006 with a reversible
+   downgrade).
+2. **Payer-side books.** Two illustrative entries per payment: the payable recognized
+   (merchant data, `merchant_attested`) and the payment sent (cites the capture). Both are
+   in the same atomic booking as the payee bundle; the independent checker requires the
+   obligation's payable and the invoice receivable to net to zero.
+3. **Settlement events persisted.** `obligation_settlement_event` (append-only) is loaded by
+   `load_record` and applied in time order with revisions, so every P1 rule (no
+   over-settlement, the settlement identity) is re-checked on every load.
+4. **Two fingerprints per binding.** `credential_fingerprint` (the client id / payer email
+   actually configured, checked before every call) and `account_fingerprint` (the provider
+   merchant id, checked against the capture's payee).
+5. **Merchant-attested capacity route.** `POST /capacity-evidence` lets a non-synthetic
+   merchant attest its own balance; this is the only way the pilot payer gets non-synthetic
+   capacity, and it is labelled `MERCHANT_ATTESTED` everywhere.
+6. **Crash recovery.** A mutating `provider_operation` left `started` longer than
+   `stale_op_s` (default 300 s, above the 120 s lease) is reclassified `unknown` and resolved
+   by lookup; a fresher one makes other workers back off.
+7. **Read-only live verification (A12).** `scripts/p5_readonly_probe.py` re-read the P0
+   invoice and capture, ran a read-only `search-invoices`, and passed them through the P5
+   parsers: settlement identity, strict PAID terms, payee fingerprint, Sandbox payer-view host
+   all confirmed (`evidence/phase5/readonly_probe_20261112T103417Z.json`).
+
+**Not done (blockers and gaps):**
+- A13 (one new Sandbox payment) needs owner authorization:
+  `evidence/phase5/sandbox_operation_gate_2026-11-12.md`.
+- A14 (verified webhook delivery) needs a public HTTPS endpoint and a registered webhook.
+- Refund posting is detection only (`REFUND_OBSERVED` exception), pending a real refund.
+- No Playwright test drives the mock provider end to end (the mock lives in-process; a
+  browser test would need a payer-simulation route, which was deliberately not added). The
+  P5 browser surface is covered by jsdom tests; the P4 Playwright suite passes unchanged.
+- Operator tooling for resolving `exception` / dead letters is data-only (rows and audit);
+  there is no resolution UI.

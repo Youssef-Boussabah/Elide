@@ -141,7 +141,12 @@ def main() -> int:
     ]
     if settings.paypal_sandbox_payer_email:
         secret_values.append(settings.paypal_sandbox_payer_email.get_secret_value())
-    if any(v and v in text_ for v in secret_values) or "@" in text_ or "http" in text_:
+    if (
+        any(v and v in text_ for v in secret_values)
+        or "@" in text_
+        or "http://" in text_
+        or "https://" in text_
+    ):
         print("REFUSED: evidence would contain a secret, email or URL; nothing written")
         return 3
     out.write_text(text_ + "\n", encoding="utf-8")
