@@ -29,14 +29,14 @@ from typing import Any
 
 from sqlalchemy import Connection, insert, select
 
-from api.app.auth.permissions import Permission, permissions_for
-from api.app.auth.tables import membership
+from api.app.auth import service as auth_service
+from api.app.auth.permissions import Permission
 from api.domain.money import USD, Money
 from api.liquidity.capacity import CapacityError, Commitment
 from api.liquidity.store import _current_evidence, reserve_capacity_in
-from api.workflow import audit
-from api.workflow.networks import ACTIVE_INTENT
-from api.workflow.plans import load_snapshot, revalidate_leg
+from api.workflow import audit, conditions
+from api.workflow.networks import ACTIVE_INTENT, load_network
+from api.workflow.plans import load_snapshot, verify_leg_now
 from api.workflow.store import ConflictError, NotVisibleError
 from api.workflow.tables import obligation, outbox_message, payment_authorization, payment_intent
 
@@ -45,15 +45,17 @@ def request_hash(body: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
 
 
-def _approver_still_authorized(conn: Connection, user_id: str, merchant_id: str) -> bool:
-    role = conn.execute(
-        select(membership.c.role).where(
-            membership.c.user_id == user_id,
-            membership.c.merchant_id == merchant_id,
-            membership.c.revoked_at.is_(None),
-        )
-    ).scalar_one_or_none()
-    return role is not None and Permission.PAYMENT_AUTHORIZE in permissions_for(role)
+def _lock_member(conn: Connection, user_id: str, merchant_id: str, *, as_code: str | None):
+    """Share-lock and re-check a membership with payment authority inside this transaction."""
+    try:
+        auth_service.lock_membership(conn, user_id, merchant_id, Permission.PAYMENT_AUTHORIZE)
+    except (auth_service.NotFoundError, auth_service.ForbiddenError):
+        if as_code is None:
+            raise NotVisibleError("not found") from None
+        raise ConflictError(
+            "the approving user no longer holds payment authority; authorize again",
+            code=as_code,
+        ) from None
 
 
 def create_payment_intent(
@@ -65,7 +67,11 @@ def create_payment_intent(
     operation_key: str,
     at: datetime,
     execution_enabled: bool,
+    allow_synthetic_authority: bool = True,
 ) -> dict[str, Any]:
+    # The actor's membership is share-locked until commit: a revocation committing before
+    # this transaction is seen; one that arrives later waits (finding 1, revocation race).
+    _lock_member(conn, user_id, merchant_id, as_code=None)
     body_hash = request_hash({"authorization_id": authorization_id})
     prior = (
         conn.execute(
@@ -99,11 +105,7 @@ def create_payment_intent(
         raise ConflictError("this payment was declined", code="NOT_APPROVED")
     if at >= a["expires_at"]:
         raise ConflictError("the payment authorization expired", code="AUTHORIZATION_EXPIRED")
-    if not _approver_still_authorized(conn, a["user_id"], merchant_id):
-        raise ConflictError(
-            "the approving user no longer holds payment authority; authorize again",
-            code="AUTHORIZATION_REVOKED",
-        )
+    _lock_member(conn, a["user_id"], merchant_id, as_code="AUTHORIZATION_REVOKED")
     used = conn.execute(
         select(payment_intent.c.intent_id).where(
             payment_intent.c.authorization_id == authorization_id
@@ -131,18 +133,37 @@ def create_payment_intent(
     snap = load_snapshot(conn, a["plan_id"], merchant_id)
     record = snap["record"]
     leg = next(x for x in record["selected_legs"] if x["leg_id"] == a["option_id"])
-    issues = revalidate_leg(conn, record, leg, snap["network_id"], at)
     if leg["depends_on"]:
-        issues.append(
-            "UPSTREAM_NOT_CONFIRMED: this payment is funded by an incoming payment that is "
-            "not provider-confirmed and verified spendable"
+        raise ConflictError(
+            "this payment is funded by an incoming payment that is not provider-confirmed "
+            "and verified spendable",
+            code="UPSTREAM_NOT_CONFIRMED",
         )
+    if leg["terms"] != "in_force":
+        raise ConflictError("the leg's terms are not an agreed amendment", code="TERMS_NOT_AGREED")
+    # Current, authoritative conditions: an approval never outlives what it consented to.
+    loaded = load_network(conn, snap["network_id"], initiator=record["focal_merchant"], as_of=at)
+    cond = conditions.payment_conditions(conn, loaded, leg, at)
+    if cond is None or conditions.digest(cond) != a["conditions_digest"]:
+        raise ConflictError(
+            "the conditions this payment was approved under have changed (policy, reserve, "
+            "terms, fees, participation or evidence basis); approve it again",
+            code="CONDITIONS_CHANGED",
+        )
+    issues = verify_leg_now(loaded, leg, at)  # independent verifier on current data
     if issues:
-        raise ConflictError("; ".join(issues), code=issues[0].split(":", 1)[0])
+        raise ConflictError("; ".join(issues), code="VERIFIER_REJECTED")
 
     ev = _current_evidence(conn, merchant_id, USD, at)
     if ev is None:
         raise ConflictError("no current capacity evidence", code="INSUFFICIENT_CAPACITY")
+    synthetic = ev.kind.value == "synthetic"
+    if synthetic and not allow_synthetic_authority:
+        raise ConflictError(
+            "synthetic evidence can never authorize a payment here", code="SYNTHETIC_EVIDENCE"
+        )
+    if ev.kind.value not in ("provider_verified", "merchant_attested", "synthetic"):
+        raise ConflictError("capacity evidence is not verified", code="INSUFFICIENT_CAPACITY")
     intent_id = "pin_" + secrets.token_hex(8)
     amount = int(a["amount_cents"]) + int(a["fee_ceiling_cents"])
     try:
@@ -151,7 +172,8 @@ def create_payment_intent(
             evidence_id=ev.evidence_id,
             commitment=Commitment(f"pi:{intent_id}", merchant_id, a["plan_id"], Money(amount, USD)),
             at=at,
-            allow_synthetic=ev.kind.value == "synthetic",
+            allow_synthetic=synthetic,
+            min_protected_reserve_cents=conditions.policy_reserve_floor(conn, merchant_id),
         )
     except CapacityError as exc:
         raise ConflictError(str(exc), code="INSUFFICIENT_CAPACITY") from None
@@ -171,6 +193,7 @@ def create_payment_intent(
         "request_sha256": body_hash,
         "commitment_id": f"pi:{intent_id}",
         "status": "awaiting_payer_action",
+        "evidence_kind": ev.kind.value,
         "created_by": user_id,
         "created_at": at,
     }
@@ -188,7 +211,7 @@ def create_payment_intent(
             intent_id=intent_id,
             payload=payload,
             payload_sha256=request_hash(payload),
-            status="pending" if execution_enabled else "held",
+            status="pending" if execution_enabled and not synthetic else "held",
             available_at=at,
             created_at=at,
         )
@@ -205,10 +228,16 @@ def create_payment_intent(
             "authorization_id": authorization_id,
             "amount_cents": int(a["amount_cents"]),
             "reserved_cents": amount,
-            "outbox": "pending" if execution_enabled else "held",
+            "outbox": "pending" if execution_enabled and not synthetic else "held",
+            "evidence_kind": ev.kind.value,
         },
     )
-    return {**values, "created_at": at.isoformat(), "replayed": False, **_labels(execution_enabled)}
+    return {
+        **values,
+        "created_at": at.isoformat(),
+        "replayed": False,
+        **_labels(execution_enabled and not synthetic),
+    }
 
 
 def _labels(execution_enabled: bool) -> dict[str, Any]:

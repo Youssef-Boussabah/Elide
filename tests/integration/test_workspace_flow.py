@@ -7,6 +7,7 @@ leg, and creates a payment intent whose outbox message stays HELD (no PayPal cal
 
 from __future__ import annotations
 
+import itertools
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -22,11 +23,20 @@ from api.workflow.tables import (
     outbox_message,
     payment_authorization,
     payment_intent,
+    plan_snapshot,
 )
 
 pytestmark = pytest.mark.integration
 
 BUYER, SUPPLIER = "buyer-owner@elide.test", "supplier-owner@elide.test"
+_seq = itertools.count()
+
+
+def _plan(actor, merchant):
+    """Create (or reuse) a durable, verified plan snapshot for review and approval."""
+    r = actor.post(f"/v1/m/{merchant}/plans", {}, key=f"plan-{merchant}-{next(_seq)}")
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 def _offer(actor, merchant, status="proposed"):
@@ -143,7 +153,7 @@ def test_full_negotiation_and_payment_authorization_flow(workspace):
     assert sorted(revs[-1].authorized_by) == ["buyer", "food_supplier"]
 
     # 4. re-plan under the agreed amendment; the buyer authorizes only its own leg
-    data = buyer.get("/v1/m/buyer/opportunities").json()
+    data = _plan(buyer, "buyer")
     leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "food_001")
     assert leg["amount_cents"] == 99000 and leg["authorize"]["terms_agreed"] is True
     plan_id = data["plan"]["plan_id"]
@@ -210,7 +220,7 @@ def test_full_negotiation_and_payment_authorization_flow(workspace):
 def test_downstream_leg_cannot_become_an_intent(workspace):
     ws = workspace
     _buyer, supplier, _ = _agree(ws)
-    data = supplier.get("/v1/m/food_supplier/opportunities").json()
+    data = _plan(supplier, "food_supplier")
     leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "freight_001")
     r = supplier.post(
         f"/v1/m/food_supplier/plans/{data['plan']['plan_id']}/authorizations",
@@ -236,7 +246,7 @@ def test_open_offer_terms_cannot_be_payment_authorized(workspace):
     buyer = ws.actor(BUYER)
     # make the plan rely on an un-agreed proposal: a $10 counter the supplier has not signed
     _counter_ten(ws, buyer)
-    data = buyer.get("/v1/m/buyer/opportunities").json()
+    data = _plan(buyer, "buyer")
     for leg in data["plan"]["my_legs"]:
         if "authorize" in leg and not leg["authorize"]["terms_agreed"]:
             r = buyer.post(
@@ -297,7 +307,7 @@ def test_concurrent_acceptance_has_exactly_one_winner(workspace):
 def test_concurrent_plans_cannot_double_spend_the_same_cash(workspace):
     ws = workspace
     buyer, _supplier, _ = _agree(ws)
-    data = buyer.get("/v1/m/buyer/opportunities").json()
+    data = _plan(buyer, "buyer")
     leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "food_001")
     r = buyer.post(
         f"/v1/m/buyer/plans/{data['plan']['plan_id']}/authorizations",
@@ -310,15 +320,22 @@ def test_concurrent_plans_cannot_double_spend_the_same_cash(workspace):
     )
     assert r.status_code == 200, r.text
     first = r.json()["authorization_id"]
-    ws.advance(minutes=1)
-    # a later plan over the same cash: the UI and API refuse a second decision on identical
-    # live terms ...
-    data2 = buyer.get("/v1/m/buyer/opportunities").json()
-    assert data2["plan"]["plan_id"] != data["plan"]["plan_id"]
-    leg2 = next(x for x in data2["plan"]["my_legs"] if x["obligation_id"] == "food_001")
+    # a re-plan without economic change reuses the durable plan and shows the approval
+    again = _plan(buyer, "buyer")
+    assert again["plan"]["plan_id"] == data["plan"]["plan_id"] and again["reused"] is True
+    leg2 = next(x for x in again["plan"]["my_legs"] if x["obligation_id"] == "food_001")
     assert leg2["payment_authorization"]["status"] == "approved"
-    # ... so simulate an approval race that slipped past it, directly in the database
+    # simulate an approval race that slipped past the API: a second snapshot and approval
     with ws.engine.begin() as c:
+        snap = dict(
+            c.execute(
+                select(plan_snapshot).where(plan_snapshot.c.plan_id == data["plan"]["plan_id"])
+            )
+            .mappings()
+            .one()
+        )
+        snap.update(plan_id="plan_race_copy", economic_digest="race")
+        c.execute(plan_snapshot.insert().values(**snap))
         row = dict(
             c.execute(
                 select(payment_authorization).where(
@@ -330,7 +347,7 @@ def test_concurrent_plans_cannot_double_spend_the_same_cash(workspace):
         )
         row.update(
             authorization_id="pau_race",
-            plan_id=data2["plan"]["plan_id"],
+            plan_id="plan_race_copy",
             binding_digest="f" * 64,
             operation_key="race",
         )
@@ -367,7 +384,7 @@ def test_revoked_approver_authorization_is_not_executable(workspace):
         auth.grant(c, uid, "buyer", "approver", at=ws.now)
     ws.seeded.passwords["buyer-approver@elide.test"] = "approver-pass-123456"
     approver = ws.actor("buyer-approver@elide.test")
-    data = approver.get("/v1/m/buyer/opportunities").json()
+    data = _plan(approver, "buyer")
     leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "food_001")
     r = approver.post(
         f"/v1/m/buyer/plans/{data['plan']['plan_id']}/authorizations",
@@ -411,7 +428,7 @@ def test_audit_trail_is_append_only_and_scoped(workspace):
 def test_invoice_in_execution_is_not_planned_again(workspace):
     ws = workspace
     buyer, _s, _ = _agree(ws)
-    data = buyer.get("/v1/m/buyer/opportunities").json()
+    data = _plan(buyer, "buyer")
     leg = next(x for x in data["plan"]["my_legs"] if x["obligation_id"] == "food_001")
     auth = buyer.post(
         f"/v1/m/buyer/plans/{data['plan']['plan_id']}/authorizations",
@@ -428,9 +445,10 @@ def test_invoice_in_execution_is_not_planned_again(workspace):
         key="k-exec-pi1",
     )
     assert pi.status_code == 200, pi.text
-    after = buyer.get("/v1/m/buyer/opportunities").json()
+    after = _plan(buyer, "buyer")
+    preview = buyer.get("/v1/m/buyer/opportunities").json()
     assert all(x["obligation_id"] != "food_001" for x in after["plan"]["my_legs"])
-    assert all(b["obligation_id"] != "food_001" for b in after["opportunity"]["my_bottlenecks"])
+    assert all(b["obligation_id"] != "food_001" for b in preview["opportunity"]["my_bottlenecks"])
     overview = buyer.get("/v1/m/buyer/overview").json()
     food = next(i for i in overview["invoices"] if i["obligation_id"] == "food_001")
     assert food["payment_state"] == "INTENT_CREATED_NOT_SENT"

@@ -304,10 +304,18 @@ plan_snapshot = Table(
     Column("record", JSONB, nullable=False),
     Column("verifier_issues", JSONB, nullable=False),
     Column("solver_status", String(40), nullable=False),
+    # Digest of the economic inputs only (no clock): unchanged inputs reuse one snapshot.
+    Column("economic_digest", String(64), nullable=False, server_default=text("'legacy'")),
     # Only plans that the independent replay verifier accepted are ever stored.
     CheckConstraint("jsonb_array_length(verifier_issues) = 0", name="ck_plan_snapshot_verified"),
 )
 Index("ix_plan_snapshot_initiator", plan_snapshot.c.initiator_merchant, plan_snapshot.c.created_at)
+Index(
+    "ix_plan_snapshot_economic",
+    plan_snapshot.c.network_id,
+    plan_snapshot.c.initiator_merchant,
+    plan_snapshot.c.economic_digest,
+)
 
 payment_authorization = Table(
     "payment_authorization",
@@ -331,6 +339,12 @@ payment_authorization = Table(
     Column("session_id", String(40), nullable=False),
     Column("decided_at", DateTime(timezone=True), nullable=False),
     Column("operation_key", String(100), nullable=False),
+    # The material conditions the approval was given under (ADR-0011 addendum 2). Rows
+    # from before 0005 carry 'legacy-unbound', which never matches: they need re-approval.
+    Column("conditions", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column(
+        "conditions_digest", String(64), nullable=False, server_default=text("'legacy-unbound'")
+    ),
     ForeignKeyConstraint(
         ["obligation_id", "revision_no"],
         ["obligation_revision.obligation_id", "obligation_revision.revision_no"],
@@ -371,7 +385,18 @@ payment_intent = Table(
     Column("status", String(30), nullable=False),
     Column("created_by", String(40), ForeignKey(USER_FK), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    # Evidence basis of the reserved cash. A synthetic intent can never leave its initial
+    # state, so simulation data cannot become payment authority (also enforced on outbox).
+    Column("evidence_kind", String(20), nullable=False, server_default=text("'synthetic'")),
     UniqueConstraint("payer_merchant", "operation_key", name="uq_payment_intent_operation"),
+    CheckConstraint(
+        "evidence_kind IN ('provider_verified', 'merchant_attested', 'synthetic')",
+        name="ck_payment_intent_evidence_kind",
+    ),
+    CheckConstraint(
+        "evidence_kind <> 'synthetic' OR status IN ('awaiting_payer_action', 'cancelled')",
+        name="ck_payment_intent_synthetic_never_executes",
+    ),
     CheckConstraint(
         "amount_cents > 0 AND fee_ceiling_cents >= 0", name="ck_payment_intent_amounts"
     ),

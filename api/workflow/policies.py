@@ -211,6 +211,14 @@ def merchant_context(
 
 def view(conn: Connection, merchant_id: str) -> dict[str, Any]:
     s = latest(conn, merchant_id)
+    confirmed = {
+        r.draft_id: r.revision_no
+        for r in conn.execute(
+            select(policy_revision.c.draft_id, policy_revision.c.revision_no).where(
+                policy_revision.c.merchant_id == merchant_id
+            )
+        )
+    }
     drafts = conn.execute(
         select(policy_draft)
         .where(policy_draft.c.merchant_id == merchant_id)
@@ -228,12 +236,13 @@ def view(conn: Connection, merchant_id: str) -> dict[str, Any]:
             "rules": asdict(s.confirmed.policy),
             "planning_assumptions": s.planning_assumptions,
         },
-        "drafts": [draft_json(d) for d in drafts],
+        "drafts": [draft_json(d, confirmed.get(d["draft_id"])) for d in drafts],
     }
 
 
-def draft_json(d: Any) -> dict[str, Any]:
+def draft_json(d: Any, confirmed_revision: int | None = None) -> dict[str, Any]:
     return {
+        "confirmed_revision": confirmed_revision,
         "draft_id": d["draft_id"],
         "created_at": d["created_at"].isoformat(),
         "source": d["source"],

@@ -67,6 +67,17 @@ def workflow_error_handler(_request: Request, exc: WorkflowError) -> JSONRespons
     )
 
 
+def _relock(conn, c: MerchantCtx, permission: P) -> None:
+    """Re-check the actor's membership inside the writing transaction (share lock until
+    commit), so a revocation committed before this write is always honoured."""
+    try:
+        auth_service.lock_membership(conn, c.principal.user_id, c.merchant_id, permission)
+    except auth_service.NotFoundError:
+        raise NotVisibleError("not found") from None
+    except auth_service.ForbiddenError as exc:
+        raise WorkflowError(str(exc), code="FORBIDDEN", status=403) from None
+
+
 def _network_id(c: MerchantCtx, requested: str | None) -> str:
     with c.engine.begin() as conn:
         ids = networks_of(conn, c.merchant_id)
@@ -177,14 +188,12 @@ def overview(c: Read, network: str | None = None) -> dict[str, Any]:
 
 @router.get("/opportunities")
 def opportunities(c: Read, network: str | None = None) -> dict[str, Any]:
+    """READ-ONLY preview: nothing is written (durable plans: POST /plans)."""
     nid = _network_id(c, network)
-    with c.engine.begin() as conn:
-        report, record, loaded = plans.analyze_for(
-            conn, network_id=nid, merchant_id=c.merchant_id, user_id=c.principal.user_id, at=c.now
-        )
-        view = plans.opportunity_view(report, loaded, c.merchant_id)
-        pview = plans.plan_view(conn, record, c.merchant_id, c.now)
-        synthetic = loaded.is_synthetic
+    with c.engine.connect() as conn:  # no transaction is committed: a read cannot persist
+        view, pview, _d = plans.preview(conn, network_id=nid, merchant_id=c.merchant_id, at=c.now)
+        synthetic = _is_synthetic(conn, nid)
+        conn.rollback()
     adapter = getattr(c.request.app.state, "workspace_llm", None)
     explanation = narrate(adapter, facts(view), c.merchant_id, ())
     return {
@@ -192,7 +201,7 @@ def opportunities(c: Read, network: str | None = None) -> dict[str, Any]:
         "network_id": nid,
         "labels": (["SYNTHETIC_NETWORK"] if synthetic else []) + ["READ_ONLY_ANALYSIS"],
         "opportunity": view,
-        "plan": pview,
+        "plan_preview": pview,
         "explanation": {
             "status": explanation.status,
             "text": explanation.text,
@@ -310,6 +319,7 @@ def make_offer(
         raise error(403, "FORBIDDEN", "making an offer signs it; your role cannot sign terms")
 
     def op(conn):
+        _relock(conn, c, P.OFFER_DECIDE)
         return negotiation.propose(
             conn,
             merchant_id=c.merchant_id,
@@ -346,6 +356,7 @@ def decide_offer(
     key: IdemKey = None,
 ) -> dict[str, Any]:
     def op(conn):
+        _relock(conn, c, P.OFFER_DECIDE)
         return negotiation.decide(
             conn,
             merchant_id=c.merchant_id,
@@ -427,11 +438,56 @@ def draft_counteroffer(body: DraftCounterBody, c: ctx(P.OFFER_PROPOSE)) -> dict[
 
 
 # --- plans and payment authorization -------------------------------------------------------
+class PlanBody(_Body):
+    network: str | None = Field(default=None, max_length=80)
+
+
+@router.post("/plans")
+def create_plan(body: PlanBody, c: ctx(P.PAYMENT_AUTHORIZE), key: IdemKey = None) -> dict[str, Any]:
+    """Explicitly create (or reuse) a durable, independently verified plan for review and
+    approval. CSRF + Idempotency-Key + per-merchant rate limit; unchanged economics reuse
+    the existing snapshot instead of writing a new immutable record."""
+    nid = _network_id(c, body.network)
+
+    def op(conn):
+        record, reused = plans.create_snapshot(
+            conn,
+            network_id=nid,
+            merchant_id=c.merchant_id,
+            user_id=c.principal.user_id,
+            at=c.now,
+        )
+        snap = plans.load_snapshot(conn, record["plan_id"], c.merchant_id)
+        return {"plan": plans.durable_plan_view(conn, snap, c.merchant_id, c.now), "reused": reused}
+
+    res, replayed = idempotency.run(
+        c.engine,
+        merchant_id=c.merchant_id,
+        user_id=c.principal.user_id,
+        key=key,
+        route="plans.create",
+        body=body.model_dump(mode="json"),
+        at=c.now,
+        operation=op,
+    )
+    if replayed:  # statuses may have changed since: serve the current view of the same plan
+        with c.engine.connect() as conn:
+            snap = plans.load_snapshot(conn, res["plan"]["plan_id"], c.merchant_id)
+            res = {**res, "plan": plans.durable_plan_view(conn, snap, c.merchant_id, c.now)}
+    return {**res, "replayed": replayed}
+
+
+@router.get("/plans")
+def list_plans(c: Read) -> dict[str, Any]:
+    with c.engine.connect() as conn:
+        return {"plans": plans.list_snapshots(conn, c.merchant_id)}
+
+
 @router.get("/plans/{plan_id}")
 def get_plan(plan_id: str, c: Read) -> dict[str, Any]:
-    with c.engine.begin() as conn:
+    with c.engine.connect() as conn:
         snap = plans.load_snapshot(conn, plan_id, c.merchant_id)
-        return plans.plan_view(conn, snap["record"], c.merchant_id, c.now)
+        return plans.durable_plan_view(conn, snap, c.merchant_id, c.now)
 
 
 class AuthorizeBody(_Body):
@@ -492,8 +548,20 @@ def create_intent(
             authorization_id=body.authorization_id,
             operation_key=key,
             at=c.now,
-            execution_enabled=get_settings().payments_execution_enabled,
+            execution_enabled=_execution_enabled(c),
+            allow_synthetic_authority=synthetic_authority_allowed(),
         )
+
+
+def synthetic_authority_allowed() -> bool:
+    """Synthetic evidence may back a (held, never-executable) intent only outside
+    production; in production it can never reach a payment intent at all."""
+    return get_settings().app_env != "production"
+
+
+def _execution_enabled(c: MerchantCtx) -> bool:
+    override = getattr(c.request.app.state, "payments_execution_enabled", None)
+    return bool(get_settings().payments_execution_enabled if override is None else override)
 
 
 @router.get("/payment-intents")
@@ -601,6 +669,7 @@ def confirm_policy(
     draft_id: str, body: ConfirmBody, c: ctx(P.POLICY_EDIT, step_up=True)
 ) -> dict[str, Any]:
     with c.engine.begin() as conn:
+        _relock(conn, c, P.POLICY_EDIT)
         prev = policies.latest(conn, c.merchant_id)
         stored = policies.confirm(
             conn,

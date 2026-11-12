@@ -108,7 +108,7 @@ def test_a_new_login_replaces_the_old_session(workspace):
 
 
 # --- tenant isolation and roles --------------------------------------------------------------
-ROUTES = ("overview", "opportunities", "network", "offers", "policy", "payment-intents")
+ROUTES = ("overview", "opportunities", "network", "offers", "policy", "payment-intents", "plans")
 
 
 @pytest.mark.parametrize("login,own", [(BUYER, "buyer"), ("carrier-owner@elide.test", "carrier")])
@@ -137,7 +137,7 @@ def test_invoice_and_plan_objects_are_party_scoped(workspace):
     assert buyer.get("/v1/m/buyer/invoices/food_001").status_code == 200
     assert buyer.get("/v1/m/buyer/invoices/repair_001").status_code == 404  # not a party
     assert buyer.get("/v1/m/buyer/invoices/does_not_exist").status_code == 404
-    plan_id = buyer.get("/v1/m/buyer/opportunities").json()["plan"]["plan_id"]
+    plan_id = buyer.post("/v1/m/buyer/plans", {}, key="sec-plan-1").json()["plan"]["plan_id"]
     view = mech.get(f"/v1/m/mechanic/plans/{plan_id}")
     assert view.status_code in (200, 404)
     if view.status_code == 200:  # mechanic is downstream: sees only its own legs

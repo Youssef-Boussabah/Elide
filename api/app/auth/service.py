@@ -548,3 +548,33 @@ def require_membership(
     if permission not in perms:
         raise ForbiddenError(f"role {row['role']} lacks {permission.value}")
     return Membership(merchant_id, row["role"], perms, row["display_name"], row["is_synthetic"])
+
+
+def lock_membership(
+    conn: Connection, user_id: str, merchant_id: str, permission: Permission
+) -> Membership:
+    """Re-check membership INSIDE the transaction that writes a financial decision, holding
+    a share lock on the membership row until commit. A concurrent revocation (an UPDATE of
+    that row) either commits first - then this sees it revoked and refuses - or waits for
+    this transaction; an actor revoked before the write commits never gains authority."""
+    row = (
+        conn.execute(
+            select(membership.c.role)
+            .join(app_user, app_user.c.user_id == membership.c.user_id)
+            .where(
+                membership.c.user_id == user_id,
+                membership.c.merchant_id == merchant_id,
+                membership.c.revoked_at.is_(None),
+                app_user.c.disabled_at.is_(None),
+            )
+            .with_for_update(read=True, of=membership)
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise NotFoundError("not found")
+    perms = permissions_for(row["role"])
+    if permission not in perms:
+        raise ForbiddenError(f"role {row['role']} lacks {permission.value}")
+    return Membership(merchant_id, row["role"], perms, "", False)
